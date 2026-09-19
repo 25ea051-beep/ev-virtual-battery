@@ -1,734 +1,699 @@
 /**
- * app.js
- * Client-side script communicating with Flask Python Digital Twin backend.
- * Handles API polling, real-time Canvas telemetry plotting, and UI events.
+ * EV Virtual Battery Command Center — app.js v2
+ * ─────────────────────────────────────────────
+ * Controllers:
+ *  1. CANInputController  – manages 5 CAN sliders, influence bars, OOD badges
+ *  2. GaugeController     – SVG arc SOH gauge with animated transitions
+ *  3. RadarController     – Chart.js radar for 5-input feature influence
+ *  4. ChartController     – 3 live telemetry line charts (SOC, Voltage, Current)
+ *  5. CellMatrixController – 96-cell voltage heatmap
+ *  6. SimulationController – tick loop, drive cycle, configuration
+ *  7. AlertController     – alert feed management
  */
 
-// ── Application State ────────────────────────────────────────────────────────
-let isRunning = false;
-let simSpeed = 1;
-let tickTimer = null;
-let isFetching = false;
-let frameCounter = 0;
+'use strict';
 
-// Histories for real-time charting (last 60 frames)
-const MAX_HIST = 60;
-const histVolt = [];
-const histCurr = [];
-const histSOC = [];
-const histTemp = [];
-
-const nCells = 96;
-
-// ── DOM References ───────────────────────────────────────────────────────────
-const btnPlayPause = document.getElementById("btnPlayPause");
-const iconPlay = document.getElementById("iconPlay");
-const iconPause = document.getElementById("iconPause");
-const labelPlay = document.getElementById("labelPlayPause");
-const btnStep = document.getElementById("btnStep");
-const btnReset = document.getElementById("btnReset");
-
-const sliderAge = document.getElementById("sliderAge");
-const valAge = document.getElementById("valAge");
-const sliderInitialSOC = document.getElementById("sliderInitialSOC");
-const valInitialSOC = document.getElementById("valInitialSOC");
-const selectCycle = document.getElementById("selectCycle");
-const valCycle = document.getElementById("valCycle");
-const cycleDesc = document.getElementById("cycleDesc");
-const sliderTemp = document.getElementById("sliderTemp");
-const valTemp = document.getElementById("valTemp");
-
-const badgeDynamicMode = document.getElementById("badgeDynamicMode");
-const btnModeAuto = document.getElementById("btnModeAuto");
-const btnModeManual = document.getElementById("btnModeManual");
-const sliderManualCurrent = document.getElementById("sliderManualCurrent");
-const valManualCurrent = document.getElementById("valManualCurrent");
-const labelCurrentModeDesc = document.getElementById("labelCurrentModeDesc");
-const presetButtons = document.querySelectorAll(".btn-preset");
-let isManualCurrentMode = false;
-let manualCurrentVal = 0.0;
-
-const kpiVoltage = document.getElementById("kpiVoltage");
-const kpiVSpread = document.getElementById("kpiVSpread");
-const kpiCurrent = document.getElementById("kpiCurrent");
-const kpiPower = document.getElementById("kpiPower");
-const badgeCurrent = document.getElementById("badgeCurrentMode");
-const kpiSOC = document.getElementById("kpiSOC");
-const barSOC = document.getElementById("barSOC");
-const kpiSOH = document.getElementById("kpiSOH");
-const badgeSOH = document.getElementById("badgeSOH");
-const kpiWeakSOH = document.getElementById("kpiWeakSOH");
-const kpiConditionScore = document.getElementById("kpiConditionScore");
-const liveBadgeCondition = document.getElementById("liveBadgeCondition");
-const kpiSecondLife = document.getElementById("kpiSecondLife");
-const kpiCapacity = document.getElementById("kpiCapacity");
-const kpiTemp = document.getElementById("kpiTemp");
-const kpiIR = document.getElementById("kpiIR");
-const kpiCellIR = document.getElementById("kpiCellIR");
-
-// ── CAN Virtual Battery Generator DOM References ────────────────────────────
-const canInputVoltage = document.getElementById("canInputVoltage");
-const canInputCurrent = document.getElementById("canInputCurrent");
-const canInputTemp = document.getElementById("canInputTemp");
-const canInputSOC = document.getElementById("canInputSOC");
-const canInputCycles = document.getElementById("canInputCycles");
-const btnGenerateTwin = document.getElementById("btnGenerateTwin");
-const btnToggleMetrics = document.getElementById("btnToggleMetrics");
-const modelMetricsCard = document.getElementById("modelMetricsCard");
-const btnRetrainModel = document.getElementById("btnRetrainModel");
-
-const genTwinSOH = document.getElementById("genTwinSOH");
-const genTwinScore = document.getElementById("genTwinScore");
-const genTwinCondition = document.getElementById("genTwinCondition");
-const genTwinSecondLife = document.getElementById("genTwinSecondLife");
-const genTwinCapacity = document.getElementById("genTwinCapacity");
-const genTwinIR = document.getElementById("genTwinIR");
-const genTwinEnergy = document.getElementById("genTwinEnergy");
-const genTwinPower = document.getElementById("genTwinPower");
-const genTwinTimestamp = document.getElementById("genTwinTimestamp");
-
-const valCellMin = document.getElementById("valCellMin");
-const valCellMax = document.getElementById("valCellMax");
-const valCellSpread = document.getElementById("valCellSpread");
-const cellMatrix = document.getElementById("cellMatrix");
-
-const canLog = document.getElementById("canLog");
-const canFrameCount = document.getElementById("canFrameCount");
-const alertLog = document.getElementById("alertLog");
-const alertCountBadge = document.getElementById("alertCountBadge");
-const backendStatus = document.getElementById("backendStatus");
-
-// ── Initialize 96-Cell Bars ──────────────────────────────────────────────────
-function initCellMatrix() {
-  cellMatrix.innerHTML = "";
-  for (let i = 0; i < nCells; i++) {
-    const bar = document.createElement("div");
-    bar.id = `cell-${i}`;
-    bar.className = "cell-bar flex-1 bg-emerald-500 rounded-t-sm";
-    bar.style.height = "70%";
-    bar.title = `Cell #${i + 1}`;
-    cellMatrix.appendChild(bar);
-  }
-}
-
-// ── API Communication ────────────────────────────────────────────────────────
-async function postAPI(endpoint, body = {}) {
-  try {
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body)
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    setBackendConnected(true);
-    return await res.json();
-  } catch (err) {
-    console.error(`Error contacting ${endpoint}:`, err);
-    setBackendConnected(false);
-    return null;
-  }
-}
-
-function setBackendConnected(connected) {
-  if (connected) {
-    backendStatus.className = "inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20";
-    backendStatus.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse mr-1.5"></span> Python Engine Live';
-  } else {
-    backendStatus.className = "inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20";
-    backendStatus.innerHTML = '<span class="w-1.5 h-1.5 rounded-full bg-rose-400 mr-1.5"></span> Disconnected';
-  }
-}
-
-// ── Step Digital Twin (Tick) ────────────────────────────────────────────────
-async function requestTick() {
-  if (isFetching) return;
-  isFetching = true;
-  const data = await postAPI("/api/tick");
-  isFetching = false;
-
-  if (data && data.frame) {
-    updateUI(data);
-  }
-}
-
-// ── Update Dashboard DOM ────────────────────────────────────────────────────
-function updateUI(data) {
-  const f = data.frame;
-  frameCounter++;
-
-  // 1. Digital Gauges
-  kpiVoltage.innerText = f.voltage.toFixed(1);
-  kpiVSpread.innerText = Math.round(f.v_cell_spread * 1000) + " mV";
-
-  kpiCurrent.innerText = Math.abs(f.current).toFixed(1);
-  kpiPower.innerText = Math.abs(data.power_kw).toFixed(1) + " kW";
-
-  if (f.current < -5.0) {
-    badgeCurrent.innerText = "REGEN (+)";
-    badgeCurrent.className = "text-[9px] font-semibold px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20";
-  } else if (f.current > 5.0) {
-    badgeCurrent.innerText = "DISCHARGE (-)";
-    badgeCurrent.className = "text-[9px] font-semibold px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20";
-  } else {
-    badgeCurrent.innerText = "STANDBY";
-    badgeCurrent.className = "text-[9px] font-semibold px-1.5 py-0.5 rounded bg-slate-500/10 text-slate-400 border border-slate-500/20";
-  }
-
-  const socPct = (f.soc * 100).toFixed(1);
-  kpiSOC.innerText = socPct;
-  barSOC.style.width = socPct + "%";
-  if (f.soc < 0.20) {
-    barSOC.className = "bg-rose-500 h-1.5 rounded-full transition-all duration-300";
-  } else if (f.soc < 0.40) {
-    barSOC.className = "bg-amber-500 h-1.5 rounded-full transition-all duration-300";
-  } else {
-    barSOC.className = "bg-emerald-500 h-1.5 rounded-full transition-all duration-300";
-  }
-
-  const sohPct = (f.soh * 100).toFixed(1);
-  kpiSOH.innerText = sohPct;
-  if (f.soh < 0.75) {
-    badgeSOH.innerText = "CRITICAL KNEE";
-    badgeSOH.className = "text-[9px] font-semibold px-1.5 py-0.5 rounded bg-rose-500/10 text-rose-400 border border-rose-500/20";
-  } else if (f.soh < 0.85) {
-    badgeSOH.innerText = "DEGRADED";
-    badgeSOH.className = "text-[9px] font-semibold px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20";
-  } else {
-    badgeSOH.innerText = "OPTIMAL";
-    badgeSOH.className = "text-[9px] font-semibold px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20";
-  }
-  kpiWeakSOH.innerText = (f.weakest_soh * 100).toFixed(1) + "%";
-
-  kpiTemp.innerText = f.temp_cell.toFixed(1);
-  kpiIR.innerText = (f.ir_pack * 1000).toFixed(1);
-  kpiCellIR.innerText = ((f.ir_pack * 1000) / nCells).toFixed(2) + " mΩ";
-
-  // ML Generated Condition Score & Condition Badge
-  const condScore = data.condition_score !== undefined ? data.condition_score : (f.condition_score !== undefined ? f.condition_score : 95.0);
-  if (kpiConditionScore) kpiConditionScore.innerText = condScore.toFixed(1);
-
-  const cond = data.battery_condition || (f.virtual_battery && f.virtual_battery.battery_condition) || "Healthy";
-  if (liveBadgeCondition) {
-    liveBadgeCondition.innerText = cond.toUpperCase();
-    if (cond === "Healthy") {
-      liveBadgeCondition.className = "text-[8px] font-bold px-1 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20";
-    } else if (cond === "Moderate") {
-      liveBadgeCondition.className = "text-[8px] font-bold px-1 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/20";
-    } else if (cond === "Degraded") {
-      liveBadgeCondition.className = "text-[8px] font-bold px-1 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20";
-    } else {
-      liveBadgeCondition.className = "text-[8px] font-bold px-1 py-0.5 rounded bg-rose-500/10 text-rose-400 border border-rose-500/20";
-    }
-  }
-
-  // Second Life Status & Usable Capacity
-  const secondLife = data.second_life_status || (f.virtual_battery && f.virtual_battery.second_life_status) || "Not yet";
-  if (kpiSecondLife) {
-    kpiSecondLife.innerText = secondLife;
-    if (secondLife.includes("replacement")) {
-      kpiSecondLife.className = "text-xs font-bold font-mono tracking-tight text-rose-400 truncate";
-    } else if (secondLife.includes("evaluation")) {
-      kpiSecondLife.className = "text-xs font-bold font-mono tracking-tight text-amber-400 truncate";
-    } else {
-      kpiSecondLife.className = "text-xs font-bold font-mono tracking-tight text-sky-400 truncate";
-    }
-  }
-
-  const cap = data.capacity_ah !== undefined ? data.capacity_ah : (f.virtual_battery && f.virtual_battery.capacity_ah ? f.virtual_battery.capacity_ah : 60.0);
-  if (kpiCapacity) kpiCapacity.innerText = cap.toFixed(1) + " Ah";
-
-  // 2. Cell Min/Max/Spread
-  valCellMin.innerText = f.v_cell_min.toFixed(3) + " V";
-  valCellMax.innerText = f.v_cell_max.toFixed(3) + " V";
-  valCellSpread.innerText = Math.round(f.v_cell_spread * 1000) + " mV";
-
-  // 3. Render 96 individual series cell voltages
-  if (data.cell_voltages && data.cell_voltages.length === nCells) {
-    const minV = f.v_cell_min;
-    const maxV = f.v_cell_max;
-    const range = Math.max(0.001, maxV - minV);
-
-    for (let i = 0; i < nCells; i++) {
-      const bar = document.getElementById(`cell-${i}`);
-      if (!bar) continue;
-      const cv = data.cell_voltages[i];
-      const pct = Math.max(15, Math.min(100, ((cv - (minV - 0.05)) / (range + 0.10)) * 100));
-      bar.style.height = pct + "%";
-
-      if (cv < 3.10) {
-        bar.className = "cell-bar flex-1 bg-rose-500 rounded-t-sm";
-      } else if (cv < 3.40) {
-        bar.className = "cell-bar flex-1 bg-amber-500 rounded-t-sm";
-      } else {
-        bar.className = "cell-bar flex-1 bg-emerald-500 rounded-t-sm";
-      }
-      bar.title = `Cell #${i + 1}: ${cv.toFixed(3)}V (SOH: ${(data.cell_soh[i] * 100).toFixed(1)}%)`;
-    }
-  }
-
-  // 4. Update CAN Telemetry Hex Stream
-  if (frameCounter % 2 === 0) {
-    const hexV = Math.floor(f.voltage * 10).toString(16).padStart(4, "0").toUpperCase();
-    const hexI = Math.floor((f.current + 500) * 10).toString(16).padStart(4, "0").toUpperCase();
-    const hexSOC = Math.floor(f.soc * 200).toString(16).padStart(2, "0").toUpperCase();
-    const hexTemp = Math.floor(f.temp_cell + 40).toString(16).padStart(2, "0").toUpperCase();
-
-    const line = document.createElement("div");
-    line.className = "flex items-center justify-between text-[10px] text-[var(--muted-foreground)] hover:text-[var(--foreground)]";
-    line.innerHTML = `
-      <span class="text-emerald-400">t=${f.timestamp.toFixed(1)}s</span>
-      <span>ID 0x180 [8]: ${hexV.slice(0, 2)} ${hexV.slice(2)} ${hexI.slice(0, 2)} ${hexI.slice(2)} ${hexSOC} ${hexTemp} 00 A1</span>
-      <span class="text-[9px] text-[var(--muted-foreground)] font-sans font-medium">${f.voltage.toFixed(1)}V, ${f.current.toFixed(1)}A, ${f.temp_cell.toFixed(1)}°C</span>
-    `;
-    canLog.insertBefore(line, canLog.firstChild);
-    if (canLog.children.length > 20) canLog.removeChild(canLog.lastChild);
-    canFrameCount.innerText = `${frameCounter} frames`;
-  }
-
-  // 5. Append New Alerts
-  if (data.new_alerts && data.new_alerts.length > 0) {
-    for (const al of data.new_alerts) {
-      const el = document.createElement("div");
-      const isCrit = al.level === "CRITICAL";
-      el.className = `p-1.5 rounded-lg border ${isCrit ? "bg-rose-500/10 border-rose-500/30 text-rose-400" : "bg-amber-500/10 border-amber-500/30 text-amber-400"} flex items-center justify-between text-[10px]`;
-      el.innerHTML = `
-        <span><b>[${al.level}]</b> ${al.msg}</span>
-        <span class="text-[9px] opacity-75 font-mono">t=${al.t.toFixed(0)}s</span>
-      `;
-      if (alertLog.children.length > 0 && alertLog.children[0].innerText.includes("No active faults")) {
-        alertLog.innerHTML = "";
-      }
-      alertLog.insertBefore(el, alertLog.firstChild);
-      if (alertLog.children.length > 15) alertLog.removeChild(alertLog.lastChild);
-    }
-  }
-
-  if (data.summary && data.summary.total_alerts > 0) {
-    alertCountBadge.innerText = `${data.summary.total_alerts} Alert${data.summary.total_alerts > 1 ? "s" : ""}`;
-    alertCountBadge.className = "text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20";
-  }
-
-  // 6. Push to Chart Histories
-  histVolt.push(f.voltage);
-  histCurr.push(f.current);
-  histSOC.push(f.soc * 100.0);
-  histTemp.push(f.temp_cell);
-  if (histVolt.length > MAX_HIST) {
-    histVolt.shift();
-    histCurr.shift();
-    histSOC.shift();
-    histTemp.shift();
-  }
-}
-
-// ── Real-Time Canvas Charts ──────────────────────────────────────────────────
-function drawCharts() {
-  drawVIChart();
-  drawSTChart();
-  requestAnimationFrame(drawCharts);
-}
-
-function drawVIChart() {
-  const cvs = document.getElementById("chartVI");
-  const dpr = window.devicePixelRatio || 1;
-  const w = cvs.clientWidth, h = cvs.clientHeight;
-  if (cvs.width !== w * dpr || cvs.height !== h * dpr) {
-    cvs.width = w * dpr; cvs.height = h * dpr;
-  }
-  const ctx = cvs.getContext("2d");
-  ctx.resetTransform();
-  ctx.scale(dpr, dpr);
-  ctx.clearRect(0, 0, w, h);
-  if (histVolt.length < 2) return;
-
-  // Grid
-  ctx.strokeStyle = "rgba(148, 163, 184, 0.12)";
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  for (let y = 0.25; y < 1; y += 0.25) { ctx.moveTo(0, h * y); ctx.lineTo(w, h * y); }
-  ctx.stroke();
-
-  // Voltage line (200V to 420V)
-  const vMin = 200, vMax = 420;
-  ctx.strokeStyle = "#10b981";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  for (let i = 0; i < histVolt.length; i++) {
-    const x = (i / (MAX_HIST - 1)) * w;
-    const y = h - ((histVolt[i] - vMin) / (vMax - vMin)) * h;
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-  }
-  ctx.stroke();
-
-  // Current line (-80A to +380A)
-  const iMin = -80, iMax = 380;
-  ctx.strokeStyle = "#0ea5e9";
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  for (let i = 0; i < histCurr.length; i++) {
-    const x = (i / (MAX_HIST - 1)) * w;
-    const y = h - ((histCurr[i] - iMin) / (iMax - iMin)) * h;
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-  }
-  ctx.stroke();
-}
-
-function drawSTChart() {
-  const cvs = document.getElementById("chartST");
-  const dpr = window.devicePixelRatio || 1;
-  const w = cvs.clientWidth, h = cvs.clientHeight;
-  if (cvs.width !== w * dpr || cvs.height !== h * dpr) {
-    cvs.width = w * dpr; cvs.height = h * dpr;
-  }
-  const ctx = cvs.getContext("2d");
-  ctx.resetTransform();
-  ctx.scale(dpr, dpr);
-  ctx.clearRect(0, 0, w, h);
-  if (histSOC.length < 2) return;
-
-  // Grid
-  ctx.strokeStyle = "rgba(148, 163, 184, 0.12)";
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  for (let y = 0.25; y < 1; y += 0.25) { ctx.moveTo(0, h * y); ctx.lineTo(w, h * y); }
-  ctx.stroke();
-
-  // SOC line (0 to 100%)
-  ctx.strokeStyle = "#f59e0b";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  for (let i = 0; i < histSOC.length; i++) {
-    const x = (i / (MAX_HIST - 1)) * w;
-    const y = h - (histSOC[i] / 100.0) * h;
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-  }
-  ctx.stroke();
-
-  // Temp line (10C to 60C)
-  const tMin = 10, tMax = 60;
-  ctx.strokeStyle = "#f43f5e";
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  for (let i = 0; i < histTemp.length; i++) {
-    const x = (i / (MAX_HIST - 1)) * w;
-    const y = h - ((histTemp[i] - tMin) / (tMax - tMin)) * h;
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-  }
-  ctx.stroke();
-}
-
-// ── Timing Loop ─────────────────────────────────────────────────────────────
-function startLoop() {
-  if (tickTimer) clearInterval(tickTimer);
-  const interval = 500 / simSpeed;
-  tickTimer = setInterval(requestTick, interval);
-}
-
-function stopLoop() {
-  if (tickTimer) {
-    clearInterval(tickTimer);
-    tickTimer = null;
-  }
-}
-
-function togglePlay() {
-  isRunning = !isRunning;
-  if (isRunning) {
-    iconPlay.classList.add("hidden");
-    iconPause.classList.remove("hidden");
-    labelPlay.innerText = "Pause";
-    btnPlayPause.className = "px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white font-medium text-xs rounded-xl shadow-sm transition flex items-center gap-1.5 cursor-pointer";
-    startLoop();
-  } else {
-    iconPlay.classList.remove("hidden");
-    iconPause.classList.add("hidden");
-    labelPlay.innerText = "Resume";
-    btnPlayPause.className = "px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-xs rounded-xl shadow-sm transition flex items-center gap-1.5 cursor-pointer";
-    stopLoop();
-  }
-}
-
-// ── Event Listeners ─────────────────────────────────────────────────────────
-btnPlayPause.addEventListener("click", togglePlay);
-
-btnStep.addEventListener("click", () => {
-  if (isRunning) togglePlay();
-  requestTick();
-});
-
-btnReset.addEventListener("click", async () => {
-  await postAPI("/api/reset");
-  histVolt.length = 0;
-  histCurr.length = 0;
-  histSOC.length = 0;
-  histTemp.length = 0;
-  canLog.innerHTML = "";
-  alertLog.innerHTML = '<div class="text-[var(--muted-foreground)] italic">No active faults. Battery pack operating within nominal SOA window.</div>';
-  alertCountBadge.innerText = "All Systems Nominal";
-  alertCountBadge.className = "text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20";
-  frameCounter = 0;
-  requestTick();
-});
-
-document.querySelectorAll(".speed-btn").forEach(btn => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll(".speed-btn").forEach(b => {
-      b.className = "speed-btn px-2 py-1 rounded-lg text-[var(--muted-foreground)] hover:text-white cursor-pointer";
-    });
-    btn.className = "speed-btn px-2 py-1 rounded-lg font-bold bg-emerald-600 text-white cursor-pointer";
-    simSpeed = parseInt(btn.dataset.speed, 10);
-    if (isRunning) startLoop();
-  });
-});
-
-// Age Slider
-sliderAge.addEventListener("input", async (e) => {
-  const age = parseFloat(e.target.value);
-  valAge.innerText = age.toFixed(1) + " Years";
-  await postAPI("/api/config", { age_years: age });
-  requestTick();
-});
-
-// Cycle Select
-selectCycle.addEventListener("change", async (e) => {
-  const cyc = e.target.value;
-  valCycle.innerText = cyc.toUpperCase();
-  const descriptions = {
-    urban: "Stop-and-go city traffic, 25% regenerative braking.",
-    highway: "Sustained high-speed cruise with occasional slowdowns.",
-    aggressive: "Heavy full-throttle accelerations and harsh braking.",
-    idle: "Vehicle parked; low auxiliary cabin load."
-  };
-  cycleDesc.innerText = descriptions[cyc] || "";
-  await postAPI("/api/config", { cycle: cyc });
-  requestTick();
-});
-
-// Ambient Temperature Slider
-sliderTemp.addEventListener("input", async (e) => {
-  const temp = parseFloat(e.target.value);
-  valTemp.innerText = temp.toFixed(1) + " °C";
-  await postAPI("/api/config", { ambient_temp: temp });
-  requestTick();
-});
-
-// Initial SOC Slider
-if (sliderInitialSOC) {
-  sliderInitialSOC.addEventListener("input", async (e) => {
-    const soc = parseFloat(e.target.value);
-    valInitialSOC.innerText = soc.toFixed(0) + " %";
-    await postAPI("/api/config", { initial_soc: soc / 100.0 });
-    requestTick();
-  });
-}
-
-// Dynamic Throttle / Load Current Control
-function setDynamicControlMode(manual) {
-  isManualCurrentMode = manual;
-  if (manual) {
-    btnModeManual.className = "px-2.5 py-1 rounded-lg font-bold bg-emerald-600 text-white cursor-pointer text-xs transition";
-    btnModeAuto.className = "px-2.5 py-1 rounded-lg text-[var(--muted-foreground)] hover:text-white bg-slate-800 border border-[var(--border)] cursor-pointer text-xs transition";
-    badgeDynamicMode.innerText = "Manual Throttle Active";
-    badgeDynamicMode.className = "px-2 py-0.5 text-[10px] font-semibold rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20";
-    sliderManualCurrent.disabled = false;
-    sliderManualCurrent.classList.remove("cursor-not-allowed", "opacity-50");
-    sliderManualCurrent.classList.add("cursor-pointer");
-    labelCurrentModeDesc.innerText = "(Dynamic user throttle override)";
-    updateManualCurrent(parseFloat(sliderManualCurrent.value));
-  } else {
-    btnModeAuto.className = "px-2.5 py-1 rounded-lg font-bold bg-emerald-600 text-white cursor-pointer text-xs transition";
-    btnModeManual.className = "px-2.5 py-1 rounded-lg text-[var(--muted-foreground)] hover:text-white bg-slate-800 border border-[var(--border)] cursor-pointer text-xs transition";
-    badgeDynamicMode.innerText = "Auto Drive Cycle";
-    badgeDynamicMode.className = "px-2 py-0.5 text-[10px] font-semibold rounded-full bg-sky-500/10 text-sky-400 border border-sky-500/20";
-    sliderManualCurrent.disabled = true;
-    sliderManualCurrent.classList.add("cursor-not-allowed", "opacity-50");
-    sliderManualCurrent.classList.remove("cursor-pointer");
-    labelCurrentModeDesc.innerText = "(Governed by selected drive cycle)";
-    valManualCurrent.innerText = "Auto (Cycle)";
-    valManualCurrent.className = "font-mono font-bold text-sm text-emerald-400";
-    postAPI("/api/config", { manual_current: null });
-  }
-}
-
-async function updateManualCurrent(val) {
-  manualCurrentVal = val;
-  sliderManualCurrent.value = val;
-  let text = `${val >= 0 ? "+" : ""}${val.toFixed(1)} A`;
-  let color = "text-slate-300";
-  if (val < -10) {
-    text += " (Charge/Regen)";
-    color = "text-sky-400";
-  } else if (val > 150) {
-    text += " (High Discharge)";
-    color = "text-rose-400";
-  } else if (val > 10) {
-    text += " (Discharge)";
-    color = "text-emerald-400";
-  } else {
-    text += " (Idle)";
-    color = "text-slate-400";
-  }
-  valManualCurrent.innerText = text;
-  valManualCurrent.className = `font-mono font-bold text-sm ${color}`;
-
-  if (isManualCurrentMode) {
-    await postAPI("/api/config", { manual_current: val });
-  }
-}
-
-if (btnModeAuto && btnModeManual) {
-  btnModeAuto.addEventListener("click", () => setDynamicControlMode(false));
-  btnModeManual.addEventListener("click", () => setDynamicControlMode(true));
-}
-
-if (sliderManualCurrent) {
-  sliderManualCurrent.addEventListener("input", (e) => {
-    updateManualCurrent(parseFloat(e.target.value));
-  });
-}
-
-presetButtons.forEach(btn => {
-  btn.addEventListener("click", () => {
-    const val = parseFloat(btn.dataset.current);
-    if (!isManualCurrentMode) {
-      setDynamicControlMode(true);
-    }
-    updateManualCurrent(val);
-  });
-});
-
-// ── CAN-to-Virtual Battery Generator Logic ──────────────────────────────────
-const samplePresets = {
-  "EVB_0010": { voltage: 371.93, current: 63.45, temp_cell: 23.5, soc: 88.53, cycle_count: 171 },
-  "EVB_0003": { voltage: 378.93, current: 61.32, temp_cell: 33.0, soc: 93.19, cycle_count: 910 },
-  "EVB_0001": { voltage: 324.25, current: 76.06, temp_cell: 17.81, soc: 20.55, cycle_count: 1176 },
-  "EVB_0007": { voltage: 377.84, current: 31.52, temp_cell: 48.74, soc: 99.28, cycle_count: 1774 },
+// ─── Preset CAN configurations ─────────────────────────────────────────────
+const PRESETS = {
+  EVB_0010: { voltage: 371.93, current: 63.45, temp_cell: 23.5,  soc: 88.53, cycle_count: 171  },
+  EVB_0003: { voltage: 378.93, current: 61.32, temp_cell: 33.0,  soc: 93.19, cycle_count: 910  },
+  EVB_0001: { voltage: 324.25, current: 76.06, temp_cell: 17.81, soc: 20.55, cycle_count: 1176 },
+  EVB_0007: { voltage: 377.84, current: 31.52, temp_cell: 48.74, soc: 99.28, cycle_count: 1774 },
 };
 
-document.querySelectorAll(".btn-can-sample").forEach(btn => {
-  btn.addEventListener("click", () => {
-    const key = btn.dataset.sample;
-    const p = samplePresets[key];
-    if (!p) return;
-    if (canInputVoltage) canInputVoltage.value = p.voltage;
-    if (canInputCurrent) canInputCurrent.value = p.current;
-    if (canInputTemp) canInputTemp.value = p.temp_cell;
-    if (canInputSOC) canInputSOC.value = p.soc;
-    if (canInputCycles) canInputCycles.value = p.cycle_count;
-    triggerGenerateTwin();
-  });
-});
+// Training ranges for OOD coloring
+const TRAINING_RANGES = {
+  Voltage_V:     [313,  390],
+  Current_A:     [-12,  100],
+  Temperature_C: [10,   55 ],
+  SOC_percent:   [5,    100],
+  Cycle_Count:   [50,   1800],
+};
 
-if (btnToggleMetrics && modelMetricsCard) {
-  btnToggleMetrics.addEventListener("click", () => {
-    modelMetricsCard.classList.toggle("hidden");
-  });
+// ─── SVG Arc Gauge helpers ──────────────────────────────────────────────────
+function polarToXY(cx, cy, r, angleDeg) {
+  const rad = (angleDeg * Math.PI) / 180;
+  return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
 }
 
-if (btnRetrainModel) {
-  btnRetrainModel.addEventListener("click", async () => {
-    btnRetrainModel.disabled = true;
-    btnRetrainModel.innerText = "⏳ Retraining...";
-    try {
-      const res = await postAPI("/api/train_model", {});
-      if (res && res.status === "success") {
-        alert("Virtual Battery CAN Model retrained successfully!\nAccuracy: " + (res.metrics.second_life_status.accuracy * 100).toFixed(1) + "%");
+function arcPath(cx, cy, r, startDeg, endDeg) {
+  const s = polarToXY(cx, cy, r, startDeg);
+  const e = polarToXY(cx, cy, r, endDeg);
+  const sweep = endDeg - startDeg;
+  if (Math.abs(sweep) < 0.1) return `M ${s.x} ${s.y}`;
+  const large = Math.abs(sweep) > 180 ? 1 : 0;
+  const dir   = sweep > 0 ? 1 : 0;
+  return `M ${s.x.toFixed(2)} ${s.y.toFixed(2)} A ${r} ${r} 0 ${large} ${dir} ${e.x.toFixed(2)} ${e.y.toFixed(2)}`;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Gauge Controller
+// ═══════════════════════════════════════════════════════════════════════════
+const GaugeController = (() => {
+  const CX = 100, CY = 105, R = 80;
+  const START = 145, TOTAL = 250; // degrees, SVG clockwise
+  let currentSoh = 100;
+
+  const trackEl = document.getElementById('gauge-track');
+  const fgEl    = document.getElementById('gauge-fg');
+  const glowEl  = document.getElementById('gauge-glow');
+  const valEl   = document.getElementById('gauge-soh-val');
+
+  function init() {
+    trackEl.setAttribute('d', arcPath(CX, CY, R, START, START + TOTAL));
+  }
+
+  function colorForSoh(soh) {
+    if (soh >= 80) return '#059669';
+    if (soh >= 65) return '#d97706';
+    return '#dc2626';
+  }
+
+  function update(soh) {
+    currentSoh = soh;
+    const clampedSoh = Math.max(0, Math.min(100, soh));
+    const endDeg = START + TOTAL * (clampedSoh / 100);
+    const path  = arcPath(CX, CY, R, START, endDeg);
+    const color = colorForSoh(clampedSoh);
+
+    fgEl.setAttribute('d', path);
+    fgEl.setAttribute('stroke', color);
+    glowEl.setAttribute('d', path);
+    glowEl.setAttribute('stroke', color);
+
+    valEl.textContent   = clampedSoh.toFixed(1);
+    valEl.style.color   = color;
+  }
+
+  init();
+  update(100);
+
+  return { update };
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Radar Controller
+// ═══════════════════════════════════════════════════════════════════════════
+const RadarController = (() => {
+  const ctx = document.getElementById('chart-radar').getContext('2d');
+
+  const labels = ['Voltage', 'Current', 'Temperature', 'SOC %', 'Cycles'];
+  const initData = [20, 20, 20, 20, 20];
+
+  Chart.defaults.color = '#64748b';
+
+  const chart = new Chart(ctx, {
+    type: 'radar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Input Influence %',
+        data: initData,
+        backgroundColor: 'rgba(37,99,235,0.10)',
+        borderColor: '#2563eb',
+        borderWidth: 2,
+        pointBackgroundColor: '#2563eb',
+        pointBorderColor: '#2563eb',
+        pointRadius: 4,
+        pointHoverRadius: 6,
+        fill: true,
+      }]
+    },
+    options: {
+      responsive: true,
+      animation: { duration: 600, easing: 'easeInOutQuart' },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => `${ctx.parsed.r.toFixed(1)}% influence`
+          }
+        }
+      },
+      scales: {
+        r: {
+          min: 0,
+          max: 55,
+          ticks: {
+            stepSize: 10,
+            color: '#64748b',
+            font: { size: 9 },
+            backdropColor: 'transparent',
+          },
+          grid:         { color: '#e2e8f0' },
+          angleLines:   { color: '#cbd5e1' },
+          pointLabels:  { color: '#334155', font: { size: 11, family: 'Plus Jakarta Sans', weight: '600' } },
+        }
       }
-    } catch (e) {
-      console.error(e);
-    } finally {
-      btnRetrainModel.disabled = false;
-      btnRetrainModel.innerText = "⚙️ Retrain Model";
     }
   });
-}
 
-async function triggerGenerateTwin() {
-  if (!canInputVoltage || !btnGenerateTwin) return;
-  const payload = {
-    voltage: parseFloat(canInputVoltage.value),
-    current: parseFloat(canInputCurrent.value),
-    temp_cell: parseFloat(canInputTemp.value),
-    soc: parseFloat(canInputSOC.value),
-    cycle_count: parseFloat(canInputCycles.value)
-  };
+  function update(influence) {
+    chart.data.datasets[0].data = [
+      influence.Voltage_V     || 20,
+      influence.Current_A     || 20,
+      influence.Temperature_C || 20,
+      influence.SOC_percent   || 20,
+      influence.Cycle_Count   || 20,
+    ];
+    chart.update('active');
+  }
 
-  btnGenerateTwin.disabled = true;
-  btnGenerateTwin.innerHTML = "<span>⏳ Computing...</span>";
+  return { update };
+})();
 
-  const res = await postAPI("/api/generate_virtual_battery", payload);
-  btnGenerateTwin.disabled = false;
-  btnGenerateTwin.innerHTML = "<span>⚡ Generate Twin</span>";
 
-  if (res && res.data && res.data.virtual_battery) {
-    renderGeneratedTwin(res.data);
+// ═══════════════════════════════════════════════════════════════════════════
+//  Chart Controller (3 live line charts)
+// ═══════════════════════════════════════════════════════════════════════════
+const ChartController = (() => {
+  const MAX_POINTS = 80;
+
+  function makeLineChart(canvasId, color, label, unit) {
+    const ctx = document.getElementById(canvasId)?.getContext('2d');
+    if (!ctx) return null;
+
+    return new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: [],
+        datasets: [{
+          label,
+          data: [],
+          borderColor: color,
+          backgroundColor: color === '#059669' ? 'rgba(5,150,105,0.08)' : (color === '#2563eb' ? 'rgba(37,99,235,0.08)' : 'rgba(124,58,237,0.08)'),
+          borderWidth: 2,
+          pointRadius: 0,
+          fill: true,
+          tension: 0.4,
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            mode: 'index', intersect: false,
+            callbacks: { label: ctx => `${ctx.parsed.y?.toFixed(2)} ${unit}` }
+          }
+        },
+        scales: {
+          x: {
+            display: false,
+            grid: { color: '#f1f5f9' },
+          },
+          y: {
+            grid: { color: '#e2e8f0' },
+            ticks: { color: '#64748b', font: { size: 9 }, maxTicksLimit: 5 },
+            border: { color: 'transparent' },
+          }
+        }
+      }
+    });
+  }
+
+  const socChart     = makeLineChart('chart-soc',     '#059669', 'SOC', '%');
+  const voltChart    = makeLineChart('chart-voltage',  '#2563eb', 'Voltage', 'V');
+  const currChart    = makeLineChart('chart-current',  '#7c3aed', 'Current', 'A');
+
+  let step = 0;
+
+  function push(soc_pct, voltage, current) {
+    step++;
+    const label = `${step}`;
+
+    const push1 = (chart, val) => {
+      if (!chart) return;
+      chart.data.labels.push(label);
+      chart.data.datasets[0].data.push(val);
+      if (chart.data.labels.length > MAX_POINTS) {
+        chart.data.labels.shift();
+        chart.data.datasets[0].data.shift();
+      }
+      chart.update('none');
+    };
+
+    push1(socChart, soc_pct);
+    push1(voltChart, voltage);
+    push1(currChart, current);
+  }
+
+  function reset() {
+    step = 0;
+    [socChart, voltChart, currChart].forEach(ch => {
+      if (!ch) return;
+      ch.data.labels = [];
+      ch.data.datasets[0].data = [];
+      ch.update('none');
+    });
+  }
+
+  return { push, reset };
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Cell Matrix Controller
+// ═══════════════════════════════════════════════════════════════════════════
+const CellMatrixController = (() => {
+  const grid = document.getElementById('cell-grid');
+
+  function cellColor(voltage) {
+    if (voltage >= 3.8) return '#059669';
+    if (voltage >= 3.5) return '#2563eb';
+    if (voltage >= 3.2) return '#d97706';
+    return '#dc2626';
+  }
+
+  function cellOpacity(voltage) {
+    const norm = Math.max(0, Math.min(1, (voltage - 2.5) / (4.3 - 2.5)));
+    return 0.45 + norm * 0.55;
+  }
+
+  // Build 96 cells initially
+  const cells = [];
+  for (let i = 0; i < 96; i++) {
+    const el = document.createElement('div');
+    el.className = 'cell';
+    el.dataset.idx = i;
+    grid.appendChild(el);
+    cells.push(el);
+  }
+
+  function update(voltages) {
+    if (!voltages || voltages.length === 0) return;
+    voltages.forEach((v, i) => {
+      if (i >= cells.length) return;
+      const color = cellColor(v);
+      const opacity = cellOpacity(v);
+      cells[i].style.background = color;
+      cells[i].style.opacity = opacity;
+      cells[i].dataset.tip = `Cell ${i+1}: ${v.toFixed(3)}V`;
+    });
+  }
+
+  return { update };
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Alert Controller
+// ═══════════════════════════════════════════════════════════════════════════
+const AlertController = (() => {
+  const list = document.getElementById('alerts-list');
+  const MAX_ALERTS = 15;
+  let alertCount = 0;
+
+  function add(alerts) {
+    if (!alerts || alerts.length === 0) return;
+    alerts.forEach(a => {
+      alertCount++;
+      const existing = list.querySelector('.no-alerts');
+      if (existing) existing.remove();
+
+      const el = document.createElement('div');
+      el.className = `alert-item ${a.level.toLowerCase()}`;
+      el.innerHTML = `<span class="alert-level">${a.level}</span><span class="alert-msg">${a.msg}</span>`;
+      list.insertBefore(el, list.firstChild);
+
+      while (list.children.length > MAX_ALERTS) {
+        list.removeChild(list.lastChild);
+      }
+    });
+  }
+
+  function clear() {
+    alertCount = 0;
+    list.innerHTML = '<div class="no-alerts">No active alerts — system nominal</div>';
+  }
+
+  return { add, clear };
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  CAN Input Controller
+// ═══════════════════════════════════════════════════════════════════════════
+const CANInputController = (() => {
+  const INPUTS = [
+    { key: 'voltage',  numId: 'inp-voltage', slId: 'sl-voltage',  oodId: 'ood-voltage',  cardId: 'card-voltage',  infId: 'inf-voltage',  pctId: 'pct-voltage',  rangeKey: 'Voltage_V' },
+    { key: 'current',  numId: 'inp-current', slId: 'sl-current',  oodId: 'ood-current',  cardId: 'card-current',  infId: 'inf-current',  pctId: 'pct-current',  rangeKey: 'Current_A' },
+    { key: 'temp_cell',numId: 'inp-temp',    slId: 'sl-temp',     oodId: 'ood-temp',     cardId: 'card-temp',     infId: 'inf-temp',     pctId: 'pct-temp',     rangeKey: 'Temperature_C' },
+    { key: 'soc',      numId: 'inp-soc',     slId: 'sl-soc',      oodId: 'ood-soc',      cardId: 'card-soc',      infId: 'inf-soc',      pctId: 'pct-soc',      rangeKey: 'SOC_percent' },
+    { key: 'cycle_count', numId: 'inp-cycles', slId: 'sl-cycles', oodId: 'ood-cycles',   cardId: 'card-cycles',   infId: 'inf-cycles',   pctId: 'pct-cycles',   rangeKey: 'Cycle_Count' },
+  ];
+
+  INPUTS.forEach(inp => {
+    const numEl = document.getElementById(inp.numId);
+    const slEl  = document.getElementById(inp.slId);
+
+    numEl.addEventListener('input', () => {
+      slEl.value = numEl.value;
+      checkOod(inp);
+    });
+    slEl.addEventListener('input', () => {
+      numEl.value = slEl.value;
+      checkOod(inp);
+    });
+  });
+
+  function checkOod(inp) {
+    const val  = parseFloat(document.getElementById(inp.numId).value);
+    const range = TRAINING_RANGES[inp.rangeKey];
+    const oodEl = document.getElementById(inp.oodId);
+    const cardEl = document.getElementById(inp.cardId);
+    const isOod = val < range[0] || val > range[1];
+    oodEl.classList.toggle('visible', isOod);
+    cardEl.classList.toggle('ood-warning', isOod);
+  }
+
+  function getValues() {
+    return {
+      voltage:     parseFloat(document.getElementById('inp-voltage').value)  || 350,
+      current:     parseFloat(document.getElementById('inp-current').value)  || 50,
+      temp_cell:   parseFloat(document.getElementById('inp-temp').value)     || 25,
+      soc:         parseFloat(document.getElementById('inp-soc').value)      || 80,
+      cycle_count: parseFloat(document.getElementById('inp-cycles').value)   || 500,
+    };
+  }
+
+  function setValues(vals) {
+    const setOne = (numId, slId, val) => {
+      document.getElementById(numId).value = val;
+      document.getElementById(slId).value  = val;
+    };
+    if (vals.voltage    != null) setOne('inp-voltage', 'sl-voltage', vals.voltage);
+    if (vals.current    != null) setOne('inp-current', 'sl-current', vals.current);
+    if (vals.temp_cell  != null) setOne('inp-temp',    'sl-temp',    vals.temp_cell);
+    if (vals.soc        != null) setOne('inp-soc',     'sl-soc',     vals.soc);
+    if (vals.cycle_count!= null) setOne('inp-cycles',  'sl-cycles',  vals.cycle_count);
+    INPUTS.forEach(checkOod);
+  }
+
+  function updateInfluenceBars(influence) {
+    const keyMap = {
+      Voltage_V:     { infId: 'inf-voltage',  pctId: 'pct-voltage' },
+      Current_A:     { infId: 'inf-current',  pctId: 'pct-current' },
+      Temperature_C: { infId: 'inf-temp',     pctId: 'pct-temp'    },
+      SOC_percent:   { infId: 'inf-soc',      pctId: 'pct-soc'     },
+      Cycle_Count:   { infId: 'inf-cycles',   pctId: 'pct-cycles'  },
+    };
+    Object.entries(influence).forEach(([key, pct]) => {
+      const ids = keyMap[key];
+      if (!ids) return;
+      const fill = document.getElementById(ids.infId);
+      const pctEl = document.getElementById(ids.pctId);
+      if (fill)  fill.style.width  = `${pct}%`;
+      if (pctEl) pctEl.textContent = `${pct.toFixed(0)}%`;
+    });
+  }
+
+  return { getValues, setValues, updateInfluenceBars };
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  UI Update helper (applies prediction output to all panels)
+// ═══════════════════════════════════════════════════════════════════════════
+function applyPrediction(result) {
+  const vb = result.virtual_battery;
+  const fi = result.feature_influence || {};
+  const ood = result.ood_detection || {};
+
+  // SOH Gauge
+  GaugeController.update(vb.soh_percent);
+
+  // Condition chip
+  const cond = vb.battery_condition || 'Unknown';
+  const chipCond = document.getElementById('chip-condition');
+  const condLower = cond.toLowerCase();
+  chipCond.className = `condition-chip ${condLower}`;
+  chipCond.textContent = `● ${cond}`;
+
+  // Second life
+  document.getElementById('sl-text').textContent = vb.second_life_status || '--';
+
+  // Condition score
+  document.getElementById('condition-score-val').textContent = (vb.condition_score || 0).toFixed(1);
+
+  // Mini KPIs (center panel)
+  document.getElementById('kpi-capacity').textContent = (vb.capacity_ah || 0).toFixed(1);
+  document.getElementById('kpi-ir').textContent       = (vb.internal_resistance_mohm || 0).toFixed(1);
+  document.getElementById('kpi-energy').textContent   = (vb.energy_remaining_kwh || 0).toFixed(2);
+  document.getElementById('kpi-power').textContent    = (vb.power_kw || 0).toFixed(2);
+
+  // Right sidebar KPIs
+  document.getElementById('r-capacity').textContent = (vb.capacity_ah || 0).toFixed(2);
+  document.getElementById('r-ir').textContent       = (vb.internal_resistance_mohm || 0).toFixed(2);
+  document.getElementById('r-energy').textContent   = (vb.energy_remaining_kwh || 0).toFixed(3);
+  document.getElementById('r-power').textContent    = (vb.power_kw || 0).toFixed(3);
+  document.getElementById('r-vmin').textContent     = (vb.v_cell_min || 0).toFixed(3);
+  document.getElementById('r-vspread').textContent  = (vb.v_cell_spread_mv || 0).toFixed(1);
+
+  // Radar chart
+  if (Object.keys(fi).length > 0) {
+    RadarController.update(fi);
+    CANInputController.updateInfluenceBars(fi);
+  }
+
+  // Cell matrix
+  if (result.cell_voltages && result.cell_voltages.length > 0) {
+    CellMatrixController.update(result.cell_voltages);
+  }
+
+  // Alerts
+  if (result.alerts && result.alerts.length > 0) {
+    AlertController.add(result.alerts);
+  }
+
+  // OOD banner
+  const banner = document.getElementById('ood-banner');
+  const oodScore = ood.ood_score || 0;
+  if (oodScore > 0.05) {
+    banner.classList.add('visible');
+    const physPct = Math.round((ood.physics_weight || 0) * 100);
+    document.getElementById('ood-banner-text').textContent =
+      `Some inputs are outside training range — physics fallback active (${physPct}% physics, ${100-physPct}% ML)`;
+  } else {
+    banner.classList.remove('visible');
   }
 }
 
-function renderGeneratedTwin(data) {
-  const vb = data.virtual_battery;
-  if (genTwinSOH) genTwinSOH.innerText = vb.soh_percent.toFixed(2) + " %";
-  if (genTwinScore) genTwinScore.innerText = vb.condition_score.toFixed(1) + " / 100";
-  if (genTwinCapacity) genTwinCapacity.innerText = vb.capacity_ah.toFixed(2) + " Ah";
-  if (genTwinIR) genTwinIR.innerText = vb.internal_resistance_mohm.toFixed(1) + " mΩ";
-  if (genTwinEnergy) genTwinEnergy.innerText = vb.energy_remaining_kwh.toFixed(2) + " kWh";
-  if (genTwinPower) genTwinPower.innerText = vb.power_kw.toFixed(2) + " kW";
-  if (genTwinTimestamp) genTwinTimestamp.innerText = `Inferred @ ${new Date().toLocaleTimeString()} • 96S Spread: ${vb.v_cell_spread_mv} mV`;
 
-  if (genTwinCondition) {
-    genTwinCondition.innerText = vb.battery_condition.toUpperCase();
-    if (vb.battery_condition === "Healthy") {
-      genTwinCondition.className = "inline-block px-2.5 py-0.5 text-[11px] font-bold rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30";
-    } else if (vb.battery_condition === "Moderate") {
-      genTwinCondition.className = "inline-block px-2.5 py-0.5 text-[11px] font-bold rounded-full bg-sky-500/20 text-sky-400 border border-sky-500/30";
-    } else if (vb.battery_condition === "Degraded") {
-      genTwinCondition.className = "inline-block px-2.5 py-0.5 text-[11px] font-bold rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/30";
+// ═══════════════════════════════════════════════════════════════════════════
+//  Predict from CAN (manual inputs)
+// ═══════════════════════════════════════════════════════════════════════════
+async function predictFromCAN() {
+  const btn = document.getElementById('btn-predict');
+  const canData = CANInputController.getValues();
+
+  btn.classList.add('loading');
+  btn.textContent = '⏳ Generating...';
+
+  try {
+    const resp = await fetch('/api/generate_virtual_battery', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(canData),
+    });
+    const json = await resp.json();
+    if (json.status === 'success') {
+      applyPrediction(json.data);
     } else {
-      genTwinCondition.className = "inline-block px-2.5 py-0.5 text-[11px] font-bold rounded-full bg-rose-500/20 text-rose-400 border border-rose-500/30";
+      AlertController.add([{ level: 'WARNING', msg: `Prediction error: ${json.message}` }]);
     }
-  }
-
-  if (genTwinSecondLife) {
-    genTwinSecondLife.innerText = vb.second_life_status;
-    if (vb.second_life_status.includes("replacement")) {
-      genTwinSecondLife.className = "inline-block px-2 py-0.5 text-[10px] font-semibold rounded-full bg-rose-500/20 text-rose-400 border border-rose-500/30";
-    } else if (vb.second_life_status.includes("evaluation")) {
-      genTwinSecondLife.className = "inline-block px-2 py-0.5 text-[10px] font-semibold rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/30";
-    } else {
-      genTwinSecondLife.className = "inline-block px-2 py-0.5 text-[10px] font-semibold rounded-full bg-sky-500/20 text-sky-400 border border-sky-500/30";
-    }
-  }
-
-  // Update cell matrix if cell voltages provided
-  if (data.cell_voltages && data.cell_voltages.length === nCells) {
-    const minV = vb.v_cell_min;
-    const maxV = vb.v_cell_max;
-    const range = Math.max(0.001, maxV - minV);
-    for (let i = 0; i < nCells; i++) {
-      const bar = document.getElementById(`cell-${i}`);
-      if (!bar) continue;
-      const cv = data.cell_voltages[i];
-      const pct = Math.max(15, Math.min(100, ((cv - (minV - 0.05)) / (range + 0.10)) * 100));
-      bar.style.height = pct + "%";
-      bar.title = `Cell #${i + 1}: ${cv.toFixed(3)}V (SOH: ${vb.soh_percent.toFixed(1)}%)`;
-    }
-    if (valCellMin) valCellMin.innerText = minV.toFixed(3) + " V";
-    if (valCellMax) valCellMax.innerText = maxV.toFixed(3) + " V";
-    if (valCellSpread) valCellSpread.innerText = vb.v_cell_spread_mv.toFixed(0) + " mV";
+  } catch (e) {
+    AlertController.add([{ level: 'WARNING', msg: `Network error: ${e.message}` }]);
+  } finally {
+    btn.classList.remove('loading');
+    btn.textContent = '⚡ Generate Virtual Battery';
   }
 }
 
-if (btnGenerateTwin) {
-  btnGenerateTwin.addEventListener("click", triggerGenerateTwin);
-}
+document.getElementById('btn-predict').addEventListener('click', predictFromCAN);
 
-// ── Startup ─────────────────────────────────────────────────────────────────
-window.addEventListener("DOMContentLoaded", () => {
-  initCellMatrix();
-  drawCharts();
-  requestTick();
-  // Populate initial generated twin
-  triggerGenerateTwin();
-  // Auto-start twin loop
-  togglePlay();
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Presets
+// ═══════════════════════════════════════════════════════════════════════════
+document.querySelectorAll('.preset-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const id = btn.dataset.preset;
+    const vals = PRESETS[id];
+    if (!vals) return;
+    CANInputController.setValues(vals);
+    setTimeout(predictFromCAN, 100);
+  });
 });
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Simulation Controller
+// ═══════════════════════════════════════════════════════════════════════════
+const SimController = (() => {
+  let isRunning = true;
+  let intervalId = null;
+  let simStep = 0;
+  const TICK_MS = 500;
+
+  const playBtn   = document.getElementById('btn-play-pause');
+  const playIcon  = document.getElementById('play-icon');
+  const playLabel = document.getElementById('play-label');
+  const stepBtn   = document.getElementById('btn-step-once');
+  const cyclesSel = document.getElementById('sel-drive-cycle');
+  const ageSlider = document.getElementById('sl-age');
+  const ageDisp   = document.getElementById('age-display');
+  const timeDisp  = document.getElementById('sim-time-display');
+
+  async function doTick() {
+    try {
+      const resp = await fetch('/api/tick', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const data = await resp.json();
+      const frame = data.frame || {};
+
+      simStep++;
+
+      // Update charts
+      const socPct = (frame.soc ?? 0) * 100;
+      ChartController.push(socPct, frame.voltage ?? 0, frame.current ?? 0);
+
+      // Update gauge & KPIs from live tick if no manual prediction active
+      const vb = data.virtual_battery || {};
+      if (vb.soh_percent != null) {
+        GaugeController.update(vb.soh_percent);
+        document.getElementById('kpi-capacity').textContent = (vb.capacity_ah||0).toFixed(1);
+        document.getElementById('kpi-ir').textContent       = (vb.internal_resistance_mohm||0).toFixed(1);
+        document.getElementById('kpi-energy').textContent   = (vb.energy_remaining_kwh||0).toFixed(2);
+        document.getElementById('kpi-power').textContent    = (data.power_kw||0).toFixed(2);
+
+        const cond = vb.battery_condition || 'Healthy';
+        const chip = document.getElementById('chip-condition');
+        chip.className = `condition-chip ${cond.toLowerCase()}`;
+        chip.textContent = `● ${cond}`;
+
+        document.getElementById('sl-text').textContent = vb.second_life_status || '--';
+        document.getElementById('condition-score-val').textContent = (vb.condition_score||0).toFixed(1);
+      }
+
+      if (data.cell_voltages) CellMatrixController.update(data.cell_voltages);
+      if (data.new_alerts && data.new_alerts.length) AlertController.add(data.new_alerts);
+
+      // Update header
+      document.getElementById('hdr-step').textContent = simStep;
+      timeDisp.textContent = `T + ${(simStep * 0.5).toFixed(0)} s`;
+
+      // Radar from live tick feature influence
+      if (vb.feature_influence) {
+        RadarController.update(vb.feature_influence);
+        CANInputController.updateInfluenceBars(vb.feature_influence);
+      }
+    } catch(e) { /* Network blip, ignore */ }
+  }
+
+  function start() {
+    if (intervalId) clearInterval(intervalId);
+    intervalId = setInterval(doTick, TICK_MS);
+    isRunning = true;
+    playIcon.textContent  = '⏸';
+    playLabel.textContent = 'Pause';
+    playBtn.classList.add('active');
+  }
+
+  function pause() {
+    if (intervalId) clearInterval(intervalId);
+    intervalId = null;
+    isRunning = false;
+    playIcon.textContent  = '▶';
+    playLabel.textContent = 'Play';
+    playBtn.classList.remove('active');
+  }
+
+  playBtn.addEventListener('click', () => isRunning ? pause() : start());
+
+  stepBtn.addEventListener('click', async () => {
+    pause();
+    await doTick();
+  });
+
+  cyclesSel.addEventListener('change', async () => {
+    try {
+      await fetch('/api/config', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cycle: cyclesSel.value }),
+      });
+      document.getElementById('hdr-cycle').textContent = cyclesSel.value;
+    } catch(e) {}
+  });
+
+  ageSlider.addEventListener('input', async () => {
+    const age = parseFloat(ageSlider.value);
+    ageDisp.textContent = `${age} yr`;
+    try {
+      await fetch('/api/config', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ age_years: age }),
+      });
+    } catch(e) {}
+  });
+
+  // Auto-start
+  start();
+
+  return { start, pause };
+})();
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Header buttons
+// ═══════════════════════════════════════════════════════════════════════════
+document.getElementById('btn-reset-twin').addEventListener('click', async () => {
+  try {
+    await fetch('/api/reset', { method: 'POST' });
+    ChartController.reset();
+    AlertController.clear();
+    GaugeController.update(100);
+    document.getElementById('hdr-step').textContent = '0';
+  } catch(e) {}
+});
+
+document.getElementById('btn-retrain-model').addEventListener('click', async () => {
+  const btn = document.getElementById('btn-retrain-model');
+  btn.textContent = '⏳ Training...';
+  btn.disabled = true;
+  try {
+    const resp = await fetch('/api/train_model', { method: 'POST' });
+    const json = await resp.json();
+    AlertController.add([{
+      level: 'INFO',
+      msg: json.status === 'success'
+        ? `Model retrained. SOH R²=${json.metrics?.soh?.r2?.toFixed(4)}`
+        : `Retrain failed: ${json.message}`
+    }]);
+  } catch(e) {
+    AlertController.add([{ level: 'WARNING', msg: `Retrain error: ${e.message}` }]);
+  } finally {
+    btn.textContent = '↺ Retrain Model';
+    btn.disabled = false;
+  }
+});
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Startup: load model info and run initial prediction
+// ═══════════════════════════════════════════════════════════════════════════
+(async () => {
+  try {
+    const resp = await fetch('/api/model_info');
+    const info = await resp.json();
+    if (info.global_importance) {
+      RadarController.update(info.global_importance);
+      CANInputController.updateInfluenceBars(info.global_importance);
+    }
+  } catch(e) {}
+
+  // Run initial prediction with defaults
+  setTimeout(predictFromCAN, 800);
+})();

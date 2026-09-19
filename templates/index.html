@@ -1,550 +1,385 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>EV Virtual Battery Digital Twin Cockpit</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <title>EV Virtual Battery — Command Center</title>
+  <meta name="description" content="Real-time EV battery digital twin with ML-powered CAN bus analysis, health monitoring, and physics simulation.">
   <link rel="stylesheet" href="/static/css/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 </head>
-<body class="antialiased p-4 md:p-6 font-sans select-none min-h-screen">
-  <div class="max-w-7xl mx-auto space-y-5">
+<body>
 
-    <!-- Top Header & Global Status -->
-    <header class="flex flex-col md:flex-row md:items-center md:justify-between gap-4 bg-[var(--card)] p-5 rounded-2xl border border-[var(--border)] shadow-xl">
-      <div class="flex items-center gap-3.5">
-        <div class="w-12 h-12 rounded-xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
-          <svg class="w-7 h-7" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
-          </svg>
-        </div>
-        <div>
-          <div class="flex items-center gap-2">
-            <h1 class="text-xl font-bold tracking-tight text-[var(--foreground)]">EV Battery Digital Twin Cockpit</h1>
-            <span id="backendStatus" class="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-              <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse mr-1.5"></span> Python Engine Live
-            </span>
-          </div>
-          <p class="text-xs text-[var(--muted-foreground)] mt-0.5">
-            Full-Stack Digital Twin: Python Flask API • 2RC Thevenin ECM • 96S NMC 811 Pack • Arrhenius Aging • CAN 2.0B
-          </p>
-        </div>
-      </div>
-
-      <!-- Action Controls -->
-      <div class="flex items-center gap-2 flex-wrap">
-        <button id="btnPlayPause" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-xs rounded-xl shadow-sm transition flex items-center gap-1.5 cursor-pointer">
-          <svg id="iconPause" class="w-4 h-4 hidden" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
-          <svg id="iconPlay" class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-          <span id="labelPlayPause">Start Twin</span>
-        </button>
-
-        <button id="btnStep" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 border border-[var(--border)] text-xs font-medium rounded-xl transition cursor-pointer">
-          Step (0.5s)
-        </button>
-
-        <button id="btnReset" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 border border-[var(--border)] text-xs font-medium rounded-xl transition cursor-pointer">
-          Reset Twin
-        </button>
-
-        <div class="flex items-center bg-slate-900 border border-[var(--border)] rounded-xl p-1 text-xs">
-          <span class="px-2 text-[var(--muted-foreground)] font-medium">Speed:</span>
-          <button data-speed="1" class="speed-btn px-2 py-1 rounded-lg font-bold bg-emerald-600 text-white cursor-pointer">1x</button>
-          <button data-speed="2" class="speed-btn px-2 py-1 rounded-lg text-[var(--muted-foreground)] hover:text-white cursor-pointer">2x</button>
-          <button data-speed="5" class="speed-btn px-2 py-1 rounded-lg text-[var(--muted-foreground)] hover:text-white cursor-pointer">5x</button>
-          <button data-speed="10" class="speed-btn px-2 py-1 rounded-lg text-[var(--muted-foreground)] hover:text-white cursor-pointer">10x</button>
-        </div>
-      </div>
-    </header>
-
-    <!-- Simulation Parameters Panel -->
-    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 bg-[var(--card)] p-4 rounded-2xl border border-[var(--border)] shadow-md">
-      <!-- Age Slider -->
-      <div class="space-y-1.5 p-2">
-        <div class="flex justify-between text-xs font-semibold">
-          <span class="text-[var(--foreground)]">Pack Age (Aging Fade)</span>
-          <span id="valAge" class="text-emerald-400 font-mono font-bold">0.0 Years</span>
-        </div>
-        <input id="sliderAge" type="range" min="0" max="10" step="0.5" value="0.0" class="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-emerald-500">
-        <div class="flex justify-between text-[10px] text-[var(--muted-foreground)]">
-          <span>0 yr (100% SOH)</span>
-          <span>5 yr (~89%)</span>
-          <span>10 yr (~72%)</span>
-        </div>
-      </div>
-
-      <!-- Initial SOC Slider -->
-      <div class="space-y-1.5 p-2">
-        <div class="flex justify-between text-xs font-semibold">
-          <span class="text-[var(--foreground)]">Initial Pack SOC</span>
-          <span id="valInitialSOC" class="text-emerald-400 font-mono font-bold">80 %</span>
-        </div>
-        <input id="sliderInitialSOC" type="range" min="5" max="100" step="5" value="80" class="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-emerald-500">
-        <div class="flex justify-between text-[10px] text-[var(--muted-foreground)]">
-          <span>5% (Depleted)</span>
-          <span>50% (Nominal)</span>
-          <span>100% (Full)</span>
-        </div>
-      </div>
-
-      <!-- Drive Cycle Selector -->
-      <div class="space-y-1.5 p-2">
-        <div class="flex justify-between text-xs font-semibold">
-          <span class="text-[var(--foreground)]">Drive Cycle Profile</span>
-          <span id="valCycle" class="text-sky-400 font-mono font-bold">URBAN</span>
-        </div>
-        <select id="selectCycle" class="w-full bg-slate-900 border border-[var(--border)] rounded-xl px-3 py-1.5 text-xs text-[var(--foreground)] focus:outline-none focus:ring-1 focus:ring-emerald-500 cursor-pointer">
-          <option value="urban">Urban (Stop-and-Go, 80A RMS)</option>
-          <option value="highway">Highway (Steady cruise, 120A RMS)</option>
-          <option value="aggressive">Aggressive / Sport (380A peak)</option>
-          <option value="idle">Idle / Standby (5A aux draw)</option>
-        </select>
-        <div class="text-[10px] text-[var(--muted-foreground)] truncate" id="cycleDesc">
-          Stop-and-go city traffic, 25% regenerative braking.
-        </div>
-      </div>
-
-      <!-- Ambient Temperature Slider -->
-      <div class="space-y-1.5 p-2">
-        <div class="flex justify-between text-xs font-semibold">
-          <span class="text-[var(--foreground)]">Ambient Temperature</span>
-          <span id="valTemp" class="text-amber-400 font-mono font-bold">25.0 °C</span>
-        </div>
-        <input id="sliderTemp" type="range" min="5" max="45" step="1" value="25" class="w-full h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-amber-500">
-        <div class="flex justify-between text-[10px] text-[var(--muted-foreground)]">
-          <span>5 °C (High IR)</span>
-          <span>25 °C (Optimal)</span>
-          <span>45 °C (Hot)</span>
-        </div>
-      </div>
+<!-- ══ HEADER ════════════════════════════════════════════════ -->
+<header class="app-header">
+  <div class="header-brand">
+    <div class="brand-icon">⚡</div>
+    <div class="brand-text">
+      <span class="brand-name">EV Virtual Battery</span>
+      <span class="brand-sub">Digital Twin Command Center</span>
     </div>
+  </div>
 
-    <!-- Dynamic Driver & Real-Time Throttle Control Panel -->
-    <div class="bg-[var(--card)] p-4 rounded-2xl border border-[var(--border)] shadow-md space-y-3">
-      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[var(--border)]/60 pb-2.5">
-        <div class="flex items-center gap-2">
-          <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
-          <h2 class="text-sm font-bold text-[var(--foreground)] tracking-wide uppercase">Dynamic Load Current & Throttle Control</h2>
-          <span id="badgeDynamicMode" class="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-sky-500/10 text-sky-400 border border-sky-500/20">Auto Drive Cycle</span>
-        </div>
-        <div class="flex items-center gap-2 text-xs">
-          <span class="text-[var(--muted-foreground)]">Mode:</span>
-          <button id="btnModeAuto" class="px-2.5 py-1 rounded-lg font-bold bg-emerald-600 text-white cursor-pointer text-xs transition">Auto Cycle</button>
-          <button id="btnModeManual" class="px-2.5 py-1 rounded-lg text-[var(--muted-foreground)] hover:text-white bg-slate-800 border border-[var(--border)] cursor-pointer text-xs transition">Manual Throttle</button>
-        </div>
-      </div>
-
-      <div class="grid grid-cols-1 lg:grid-cols-12 gap-4 items-center">
-        <!-- Current Slider & Value -->
-        <div class="lg:col-span-8 space-y-2">
-          <div class="flex justify-between items-center text-xs">
-            <span class="text-[var(--muted-foreground)]">Dynamic Load Current: <span id="labelCurrentModeDesc" class="text-slate-400">(Governed by selected drive cycle)</span></span>
-            <span id="valManualCurrent" class="font-mono font-bold text-sm text-emerald-400">Auto (Cycle)</span>
-          </div>
-          <input id="sliderManualCurrent" type="range" min="-150" max="350" step="5" value="0" disabled class="w-full h-2 bg-slate-800 rounded-lg appearance-none cursor-not-allowed opacity-50 accent-emerald-500 transition">
-          <div class="flex justify-between text-[10px] text-[var(--muted-foreground)] font-mono">
-            <span class="text-sky-400">-150 A (Fast Charge/Regen)</span>
-            <span class="text-slate-400">0 A (Idle)</span>
-            <span class="text-emerald-400">+100 A (Cruise)</span>
-            <span class="text-rose-400">+350 A (Max Accel)</span>
-          </div>
-        </div>
-
-        <!-- Quick Current Presets -->
-        <div class="lg:col-span-4 flex flex-wrap gap-1.5 justify-end">
-          <button data-current="-60" class="btn-preset px-2.5 py-1.5 bg-slate-900 hover:bg-slate-800 border border-sky-500/30 text-sky-400 rounded-lg text-xs font-mono transition cursor-pointer" title="Fast Charge / High Regen">⚡ -60A Charge</button>
-          <button data-current="0" class="btn-preset px-2.5 py-1.5 bg-slate-900 hover:bg-slate-800 border border-[var(--border)] text-slate-300 rounded-lg text-xs font-mono transition cursor-pointer" title="Coast / Standby">⏸ 0A Idle</button>
-          <button data-current="80" class="btn-preset px-2.5 py-1.5 bg-slate-900 hover:bg-slate-800 border border-emerald-500/30 text-emerald-400 rounded-lg text-xs font-mono transition cursor-pointer" title="City Driving Load">🚗 +80A Cruise</button>
-          <button data-current="220" class="btn-preset px-2.5 py-1.5 bg-slate-900 hover:bg-slate-800 border border-rose-500/30 text-rose-400 rounded-lg text-xs font-mono transition cursor-pointer" title="Full Throttle Acceleration">🏎 +220A Sport</button>
-        </div>
-      </div>
+  <div class="header-center">
+    <div class="status-badge" id="status-live-badge">
+      <span class="dot"></span>
+      <span id="hdr-sim-status">LIVE SIMULATION</span>
     </div>
-
-    <!-- ⚡ Machine Learning CAN-to-Virtual Battery Generator Panel -->
-    <div class="bg-[var(--card)] p-5 rounded-2xl border border-emerald-500/30 shadow-xl space-y-4 relative overflow-hidden">
-      <!-- Ambient Glow Accent -->
-      <div class="absolute -top-12 -right-12 w-48 h-48 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none"></div>
-
-      <div class="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-[var(--border)]/70 pb-3">
-        <div class="flex items-center gap-3">
-          <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-emerald-500/20 to-sky-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 font-bold text-base shadow-sm">
-            ⚡
-          </div>
-          <div>
-            <div class="flex items-center gap-2">
-              <h2 class="text-sm font-bold text-[var(--foreground)] tracking-wide uppercase">CAN Telemetry → Virtual Battery Twin Generator</h2>
-              <span id="modelStatusBadge" class="px-2 py-0.5 text-[10px] font-semibold rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                ● ML Pipeline Active (R²: 0.983)
-              </span>
-            </div>
-            <p class="text-[11px] text-[var(--muted-foreground)]">
-              Multi-target Gradient Boosting & Random Forest models trained on 1,000 ground-truth EV battery datasets. Ingests raw CAN bus frames and generates the full virtual battery state.
-            </p>
-          </div>
-        </div>
-
-        <div class="flex items-center gap-2">
-          <button id="btnToggleMetrics" class="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-[11px] font-medium text-slate-300 border border-[var(--border)] rounded-xl transition cursor-pointer flex items-center gap-1">
-            📊 Model Metrics
-          </button>
-          <button id="btnRetrainModel" class="px-3 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-[11px] font-semibold text-emerald-300 border border-emerald-500/40 rounded-xl transition cursor-pointer flex items-center gap-1">
-            ⚙️ Retrain Model
-          </button>
-        </div>
-      </div>
-
-      <!-- Model Performance Collapsible Card -->
-      <div id="modelMetricsCard" class="hidden bg-slate-900/90 border border-emerald-500/30 p-3.5 rounded-xl space-y-2 text-xs">
-        <div class="flex justify-between items-center text-emerald-400 font-bold text-xs">
-          <span>🧠 Trained Model Performance on 1,000 Battery Test Partitions</span>
-          <span class="text-[10px] text-[var(--muted-foreground)] font-mono">Dataset: battery_can_dataset.csv</span>
-        </div>
-        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 text-[11px]">
-          <div class="bg-slate-800/80 p-2 rounded-lg border border-[var(--border)]"><span class="text-[var(--muted-foreground)] block text-[10px]">SOH Regressor</span><b class="text-emerald-400 font-mono">R²: 0.9831</b><span class="text-[9px] block text-slate-400">MAE: 0.997%</span></div>
-          <div class="bg-slate-800/80 p-2 rounded-lg border border-[var(--border)]"><span class="text-[var(--muted-foreground)] block text-[10px]">Capacity Regressor</span><b class="text-emerald-400 font-mono">R²: 0.9830</b><span class="text-[9px] block text-slate-400">MAE: 0.60 Ah</span></div>
-          <div class="bg-slate-800/80 p-2 rounded-lg border border-[var(--border)]"><span class="text-[var(--muted-foreground)] block text-[10px]">IR Regressor</span><b class="text-sky-400 font-mono">R²: 0.9395</b><span class="text-[9px] block text-slate-400">MAE: 3.4 mΩ</span></div>
-          <div class="bg-slate-800/80 p-2 rounded-lg border border-[var(--border)]"><span class="text-[var(--muted-foreground)] block text-[10px]">Condition Score</span><b class="text-emerald-400 font-mono">R²: 0.9836</b><span class="text-[9px] block text-slate-400">MAE: 0.73 pts</span></div>
-          <div class="bg-slate-800/80 p-2 rounded-lg border border-[var(--border)]"><span class="text-[var(--muted-foreground)] block text-[10px]">Battery Condition</span><b class="text-amber-400 font-mono">92.5% Acc</b><span class="text-[9px] block text-slate-400">4-Class RF</span></div>
-          <div class="bg-slate-800/80 p-2 rounded-lg border border-[var(--border)]"><span class="text-[var(--muted-foreground)] block text-[10px]">Second-Life Status</span><b class="text-purple-400 font-mono">95.0% Acc</b><span class="text-[9px] block text-slate-400">3-Class RF</span></div>
-        </div>
-      </div>
-
-      <!-- Quick Dataset Presets -->
-      <div class="space-y-1.5">
-        <div class="flex items-center justify-between text-xs">
-          <span class="text-[var(--muted-foreground)] font-medium">Load Ground-Truth Sample from Dataset:</span>
-          <span class="text-[10px] text-slate-400">Click a preset to populate CAN signals</span>
-        </div>
-        <div class="flex flex-wrap gap-2">
-          <button data-sample="EVB_0010" class="btn-can-sample px-3 py-1.5 bg-slate-900 hover:bg-slate-800 border border-emerald-500/40 text-emerald-400 text-xs font-mono rounded-xl transition cursor-pointer flex items-center gap-1.5 shadow-sm">
-            <span class="w-2 h-2 rounded-full bg-emerald-400"></span> EVB_0010 (Healthy • 171 cyc • 371.9V • SOH 97%)
-          </button>
-          <button data-sample="EVB_0003" class="btn-can-sample px-3 py-1.5 bg-slate-900 hover:bg-slate-800 border border-sky-500/40 text-sky-400 text-xs font-mono rounded-xl transition cursor-pointer flex items-center gap-1.5 shadow-sm">
-            <span class="w-2 h-2 rounded-full bg-sky-400"></span> EVB_0003 (Moderate • 910 cyc • 378.9V • SOH 82%)
-          </button>
-          <button data-sample="EVB_0001" class="btn-can-sample px-3 py-1.5 bg-slate-900 hover:bg-slate-800 border border-amber-500/40 text-amber-400 text-xs font-mono rounded-xl transition cursor-pointer flex items-center gap-1.5 shadow-sm">
-            <span class="w-2 h-2 rounded-full bg-amber-400"></span> EVB_0001 (Degraded • 1,176 cyc • 324.3V • SOH 76%)
-          </button>
-          <button data-sample="EVB_0007" class="btn-can-sample px-3 py-1.5 bg-slate-900 hover:bg-slate-800 border border-rose-500/40 text-rose-400 text-xs font-mono rounded-xl transition cursor-pointer flex items-center gap-1.5 shadow-sm">
-            <span class="w-2 h-2 rounded-full bg-rose-400"></span> EVB_0007 (Critical • 1,774 cyc • 377.8V • SOH 63%)
-          </button>
-        </div>
-      </div>
-
-      <!-- CAN Telemetry Input Controls & Submit -->
-      <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 pt-1">
-        <div class="bg-slate-900/90 p-2.5 rounded-xl border border-[var(--border)]">
-          <label class="text-[10px] font-semibold text-[var(--muted-foreground)] block">CAN Voltage (V)</label>
-          <input id="canInputVoltage" type="number" step="0.1" value="350.0" class="w-full bg-slate-800 border border-[var(--border)] rounded-lg px-2.5 py-1 text-sm font-mono text-[var(--foreground)] mt-1 focus:outline-none focus:ring-1 focus:ring-emerald-500">
-        </div>
-        <div class="bg-slate-900/90 p-2.5 rounded-xl border border-[var(--border)]">
-          <label class="text-[10px] font-semibold text-[var(--muted-foreground)] block">CAN Current (A)</label>
-          <input id="canInputCurrent" type="number" step="0.5" value="45.0" class="w-full bg-slate-800 border border-[var(--border)] rounded-lg px-2.5 py-1 text-sm font-mono text-[var(--foreground)] mt-1 focus:outline-none focus:ring-1 focus:ring-emerald-500">
-        </div>
-        <div class="bg-slate-900/90 p-2.5 rounded-xl border border-[var(--border)]">
-          <label class="text-[10px] font-semibold text-[var(--muted-foreground)] block">CAN Temp (°C)</label>
-          <input id="canInputTemp" type="number" step="0.5" value="28.0" class="w-full bg-slate-800 border border-[var(--border)] rounded-lg px-2.5 py-1 text-sm font-mono text-[var(--foreground)] mt-1 focus:outline-none focus:ring-1 focus:ring-emerald-500">
-        </div>
-        <div class="bg-slate-900/90 p-2.5 rounded-xl border border-[var(--border)]">
-          <label class="text-[10px] font-semibold text-[var(--muted-foreground)] block">CAN SOC (%)</label>
-          <input id="canInputSOC" type="number" step="0.5" value="65.0" class="w-full bg-slate-800 border border-[var(--border)] rounded-lg px-2.5 py-1 text-sm font-mono text-[var(--foreground)] mt-1 focus:outline-none focus:ring-1 focus:ring-emerald-500">
-        </div>
-        <div class="bg-slate-900/90 p-2.5 rounded-xl border border-[var(--border)]">
-          <label class="text-[10px] font-semibold text-[var(--muted-foreground)] block">BMS Cycle Count</label>
-          <input id="canInputCycles" type="number" step="10" value="800" class="w-full bg-slate-800 border border-[var(--border)] rounded-lg px-2.5 py-1 text-sm font-mono text-[var(--foreground)] mt-1 focus:outline-none focus:ring-1 focus:ring-emerald-500">
-        </div>
-        <div class="flex items-end">
-          <button id="btnGenerateTwin" class="w-full py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-xs font-bold rounded-xl shadow-lg shadow-emerald-500/20 transition cursor-pointer flex items-center justify-center gap-1.5">
-            <span>⚡ Generate Twin</span>
-          </button>
-        </div>
-      </div>
-
-      <!-- Generated Virtual Battery Twin Output Display Card -->
-      <div id="genTwinOutputCard" class="bg-slate-900/90 p-4 rounded-xl border border-emerald-500/40 space-y-3">
-        <div class="flex items-center justify-between border-b border-[var(--border)]/60 pb-2">
-          <span class="text-xs font-bold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
-            <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span> Generated Virtual Battery Twin Profile
-          </span>
-          <span id="genTwinTimestamp" class="text-[10px] font-mono text-[var(--muted-foreground)]">Model Inferred</span>
-        </div>
-
-        <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3 text-center">
-          <div class="bg-slate-800/70 p-2.5 rounded-xl border border-[var(--border)]">
-            <span class="text-[10px] text-[var(--muted-foreground)] block">State of Health (SOH)</span>
-            <span id="genTwinSOH" class="text-lg font-bold font-mono text-emerald-400 block mt-0.5">-- %</span>
-            <span class="text-[9px] text-slate-400">Usable Health</span>
-          </div>
-
-          <div class="bg-slate-800/70 p-2.5 rounded-xl border border-[var(--border)]">
-            <span class="text-[10px] text-[var(--muted-foreground)] block">Health Score</span>
-            <span id="genTwinScore" class="text-lg font-bold font-mono text-[var(--foreground)] block mt-0.5">-- / 100</span>
-            <span class="text-[9px] text-slate-400">Condition Index</span>
-          </div>
-
-          <div class="bg-slate-800/70 p-2.5 rounded-xl border border-[var(--border)]">
-            <span class="text-[10px] text-[var(--muted-foreground)] block">Battery Condition</span>
-            <div class="mt-1">
-              <span id="genTwinCondition" class="inline-block px-2 py-0.5 text-[11px] font-bold rounded-full bg-slate-700 text-slate-300">--</span>
-            </div>
-            <span class="text-[9px] text-slate-400 block mt-0.5">Operational SOA</span>
-          </div>
-
-          <div class="bg-slate-800/70 p-2.5 rounded-xl border border-[var(--border)]">
-            <span class="text-[10px] text-[var(--muted-foreground)] block">Second Life Decision</span>
-            <div class="mt-1">
-              <span id="genTwinSecondLife" class="inline-block px-2 py-0.5 text-[10px] font-semibold rounded-full bg-slate-700 text-slate-300">--</span>
-            </div>
-            <span class="text-[9px] text-slate-400 block mt-0.5">Retirement Class</span>
-          </div>
-
-          <div class="bg-slate-800/70 p-2.5 rounded-xl border border-[var(--border)]">
-            <span class="text-[10px] text-[var(--muted-foreground)] block">Usable Capacity</span>
-            <span id="genTwinCapacity" class="text-lg font-bold font-mono text-sky-400 block mt-0.5">-- Ah</span>
-            <span class="text-[9px] text-slate-400">Nominal: 60.0 Ah</span>
-          </div>
-
-          <div class="bg-slate-800/70 p-2.5 rounded-xl border border-[var(--border)]">
-            <span class="text-[10px] text-[var(--muted-foreground)] block">Internal Resistance</span>
-            <span id="genTwinIR" class="text-lg font-bold font-mono text-amber-400 block mt-0.5">-- mΩ</span>
-            <span class="text-[9px] text-slate-400">Total Pack IR</span>
-          </div>
-
-          <div class="bg-slate-800/70 p-2.5 rounded-xl border border-[var(--border)]">
-            <span class="text-[10px] text-[var(--muted-foreground)] block">Stored Energy</span>
-            <span id="genTwinEnergy" class="text-lg font-bold font-mono text-[var(--foreground)] block mt-0.5">-- kWh</span>
-            <span class="text-[9px] text-slate-400">Pack Remaining</span>
-          </div>
-
-          <div class="bg-slate-800/70 p-2.5 rounded-xl border border-[var(--border)]">
-            <span class="text-[10px] text-[var(--muted-foreground)] block">Instant Power</span>
-            <span id="genTwinPower" class="text-lg font-bold font-mono text-[var(--foreground)] block mt-0.5">-- kW</span>
-            <span class="text-[9px] text-slate-400">V × I Output</span>
-          </div>
-        </div>
-      </div>
+    <div class="status-badge">
+      <span style="color:var(--text-muted)">Step</span>
+      <span id="hdr-step" style="color:var(--blue-accent);font-weight:700">0</span>
     </div>
+    <div class="status-badge">
+      <span style="color:var(--text-muted)">Cycle</span>
+      <span id="hdr-cycle" style="color:var(--text-primary)">urban</span>
+    </div>
+  </div>
 
-    <!-- Live Telemetry KPI Cards -->
-    <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
-      <!-- Pack Voltage -->
-      <div class="bg-[var(--card)] p-3.5 rounded-2xl border border-[var(--border)] shadow space-y-1">
-        <div class="text-[10px] font-medium text-[var(--muted-foreground)] flex items-center justify-between">
-          <span>Pack Voltage</span>
-          <span class="text-[8px] font-mono bg-slate-900 px-1 py-0.5 rounded border border-[var(--border)]">CAN 0x180</span>
+  <div class="header-right">
+    <button class="header-btn" id="btn-retrain-model" title="Retrain ML model on dataset">↺ Retrain Model</button>
+    <button class="header-btn danger" id="btn-reset-twin" title="Reset simulation">⊗ Reset</button>
+  </div>
+</header>
+
+<!-- ══ MAIN ══════════════════════════════════════════════════ -->
+<main class="app-main">
+
+  <!-- ── LEFT SIDEBAR: CAN Input Panel ─────────────────── -->
+  <aside class="sidebar-left">
+    <div class="sidebar-left-inner">
+
+      <div class="input-section-title">CAN Bus Signal Input</div>
+
+      <!-- Voltage -->
+      <div class="input-card" id="card-voltage">
+        <div class="input-header">
+          <div class="input-icon">⚡</div>
+          <div class="input-label-group">
+            <div class="input-label">Pack Voltage</div>
+            <div class="input-value-row">
+              <input class="input-value" type="number" id="inp-voltage" value="350" min="150" max="450" step="0.1">
+              <span class="input-unit">V</span>
+            </div>
+          </div>
+          <div class="ood-badge" id="ood-voltage">⚠ OOD</div>
         </div>
-        <div class="flex items-baseline gap-1">
-          <span id="kpiVoltage" class="text-xl font-bold font-mono tracking-tight text-[var(--foreground)]">359.4</span>
-          <span class="text-xs text-[var(--muted-foreground)]">V</span>
-        </div>
-        <div class="text-[9px] text-[var(--muted-foreground)] flex justify-between pt-1 border-t border-[var(--border)]/50">
-          <span>Spread:</span>
-          <span id="kpiVSpread" class="font-mono text-emerald-400 font-medium">18 mV</span>
+        <input class="input-slider" id="sl-voltage" type="range" min="150" max="450" step="0.5" value="350">
+        <div class="input-slider-range"><span>150 V</span><span>450 V</span></div>
+        <div class="influence-row">
+          <span class="influence-label">Influence</span>
+          <div class="influence-track">
+            <div class="influence-fill" id="inf-voltage" style="width:20%"></div>
+          </div>
+          <span class="influence-pct" id="pct-voltage">20%</span>
         </div>
       </div>
 
-      <!-- Pack Current -->
-      <div class="bg-[var(--card)] p-3.5 rounded-2xl border border-[var(--border)] shadow space-y-1">
-        <div class="text-[10px] font-medium text-[var(--muted-foreground)] flex items-center justify-between">
-          <span>Pack Current</span>
-          <span id="badgeCurrentMode" class="text-[8px] font-semibold px-1 py-0.5 rounded bg-emerald-500/10 text-emerald-400">DISCHARGE</span>
+      <!-- Current -->
+      <div class="input-card" id="card-current">
+        <div class="input-header">
+          <div class="input-icon">➡️</div>
+          <div class="input-label-group">
+            <div class="input-label">Load Current (+discharge / −charge)</div>
+            <div class="input-value-row">
+              <input class="input-value" type="number" id="inp-current" value="50" min="-100" max="200" step="0.1">
+              <span class="input-unit">A</span>
+            </div>
+          </div>
+          <div class="ood-badge" id="ood-current">⚠ OOD</div>
         </div>
-        <div class="flex items-baseline gap-1">
-          <span id="kpiCurrent" class="text-xl font-bold font-mono tracking-tight text-[var(--foreground)]">80.5</span>
-          <span class="text-xs text-[var(--muted-foreground)]">A</span>
+        <input class="input-slider" id="sl-current" type="range" min="-100" max="200" step="0.5" value="50">
+        <div class="input-slider-range"><span>−100 A</span><span>+200 A</span></div>
+        <div class="influence-row">
+          <span class="influence-label">Influence</span>
+          <div class="influence-track">
+            <div class="influence-fill" id="inf-current" style="width:20%"></div>
+          </div>
+          <span class="influence-pct" id="pct-current">20%</span>
         </div>
-        <div class="text-[9px] text-[var(--muted-foreground)] flex justify-between pt-1 border-t border-[var(--border)]/50">
-          <span>Power:</span>
-          <span id="kpiPower" class="font-mono text-[var(--foreground)] font-medium">28.9 kW</span>
+      </div>
+
+      <!-- Temperature -->
+      <div class="input-card" id="card-temp">
+        <div class="input-header">
+          <div class="input-icon">🌡️</div>
+          <div class="input-label-group">
+            <div class="input-label">Cell Temperature</div>
+            <div class="input-value-row">
+              <input class="input-value" type="number" id="inp-temp" value="25" min="-20" max="80" step="0.1">
+              <span class="input-unit">°C</span>
+            </div>
+          </div>
+          <div class="ood-badge" id="ood-temp">⚠ OOD</div>
+        </div>
+        <input class="input-slider" id="sl-temp" type="range" min="-20" max="80" step="0.5" value="25">
+        <div class="input-slider-range"><span>−20 °C</span><span>80 °C</span></div>
+        <div class="influence-row">
+          <span class="influence-label">Influence</span>
+          <div class="influence-track">
+            <div class="influence-fill" id="inf-temp" style="width:20%"></div>
+          </div>
+          <span class="influence-pct" id="pct-temp">20%</span>
         </div>
       </div>
 
       <!-- SOC -->
-      <div class="bg-[var(--card)] p-3.5 rounded-2xl border border-[var(--border)] shadow space-y-1">
-        <div class="text-[10px] font-medium text-[var(--muted-foreground)] flex items-center justify-between">
-          <span>State of Charge</span>
-          <span class="text-[8px] font-mono text-emerald-400 font-bold">BMS EST</span>
+      <div class="input-card" id="card-soc">
+        <div class="input-header">
+          <div class="input-icon">🔋</div>
+          <div class="input-label-group">
+            <div class="input-label">State of Charge</div>
+            <div class="input-value-row">
+              <input class="input-value" type="number" id="inp-soc" value="80" min="0" max="100" step="0.1">
+              <span class="input-unit">%</span>
+            </div>
+          </div>
+          <div class="ood-badge" id="ood-soc">⚠ OOD</div>
         </div>
-        <div class="flex items-baseline gap-1">
-          <span id="kpiSOC" class="text-xl font-bold font-mono tracking-tight text-emerald-400">80.0</span>
-          <span class="text-xs text-[var(--muted-foreground)]">%</span>
-        </div>
-        <div class="w-full bg-slate-700 rounded-full h-1 mt-1 overflow-hidden">
-          <div id="barSOC" class="bg-emerald-500 h-1 rounded-full transition-all duration-300" style="width: 80%"></div>
-        </div>
-      </div>
-
-      <!-- SOH -->
-      <div class="bg-[var(--card)] p-3.5 rounded-2xl border border-[var(--border)] shadow space-y-1">
-        <div class="text-[10px] font-medium text-[var(--muted-foreground)] flex items-center justify-between">
-          <span>State of Health</span>
-          <span id="badgeSOH" class="text-[8px] font-semibold px-1 py-0.5 rounded bg-emerald-500/10 text-emerald-400">OPTIMAL</span>
-        </div>
-        <div class="flex items-baseline gap-1">
-          <span id="kpiSOH" class="text-xl font-bold font-mono tracking-tight text-[var(--foreground)]">100.0</span>
-          <span class="text-xs text-[var(--muted-foreground)]">%</span>
-        </div>
-        <div class="text-[9px] text-[var(--muted-foreground)] flex justify-between pt-1 border-t border-[var(--border)]/50">
-          <span>Weakest:</span>
-          <span id="kpiWeakSOH" class="font-mono text-emerald-400 font-medium">99.8%</span>
+        <input class="input-slider" id="sl-soc" type="range" min="0" max="100" step="0.5" value="80">
+        <div class="input-slider-range"><span>0%</span><span>100%</span></div>
+        <div class="influence-row">
+          <span class="influence-label">Influence</span>
+          <div class="influence-track">
+            <div class="influence-fill" id="inf-soc" style="width:20%"></div>
+          </div>
+          <span class="influence-pct" id="pct-soc">20%</span>
         </div>
       </div>
 
-      <!-- Condition Score (ML Generated) -->
-      <div class="bg-[var(--card)] p-3.5 rounded-2xl border border-[var(--border)] shadow space-y-1">
-        <div class="text-[10px] font-medium text-[var(--muted-foreground)] flex items-center justify-between">
-          <span>Condition Score</span>
-          <span id="liveBadgeCondition" class="text-[8px] font-bold px-1 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">HEALTHY</span>
+      <!-- Cycle Count -->
+      <div class="input-card" id="card-cycles">
+        <div class="input-header">
+          <div class="input-icon">🔄</div>
+          <div class="input-label-group">
+            <div class="input-label">Lifetime Cycle Count</div>
+            <div class="input-value-row">
+              <input class="input-value" type="number" id="inp-cycles" value="500" min="0" max="5000" step="1">
+              <span class="input-unit">cyc</span>
+            </div>
+          </div>
+          <div class="ood-badge" id="ood-cycles">⚠ OOD</div>
         </div>
-        <div class="flex items-baseline gap-1">
-          <span id="kpiConditionScore" class="text-xl font-bold font-mono tracking-tight text-emerald-400">96.8</span>
-          <span class="text-xs text-[var(--muted-foreground)]">/ 100</span>
-        </div>
-        <div class="text-[9px] text-[var(--muted-foreground)] flex justify-between pt-1 border-t border-[var(--border)]/50">
-          <span>SOA Status:</span>
-          <span id="kpiSOA" class="font-mono text-emerald-400 font-medium">Nominal</span>
-        </div>
-      </div>
-
-      <!-- Second Life Status (ML Generated) -->
-      <div class="bg-[var(--card)] p-3.5 rounded-2xl border border-[var(--border)] shadow space-y-1">
-        <div class="text-[10px] font-medium text-[var(--muted-foreground)] flex items-center justify-between">
-          <span>Second-Life Status</span>
-          <span class="text-[8px] font-mono bg-slate-900 px-1 py-0.5 rounded border border-[var(--border)] text-sky-400">Decision</span>
-        </div>
-        <div class="flex items-baseline gap-1 truncate">
-          <span id="kpiSecondLife" class="text-sm font-bold font-mono tracking-tight text-sky-400 truncate">Not yet</span>
-        </div>
-        <div class="text-[9px] text-[var(--muted-foreground)] flex justify-between pt-1 border-t border-[var(--border)]/50">
-          <span>Usable Cap:</span>
-          <span id="kpiCapacity" class="font-mono text-[var(--foreground)] font-medium">60.0 Ah</span>
+        <input class="input-slider" id="sl-cycles" type="range" min="0" max="5000" step="10" value="500">
+        <div class="input-slider-range"><span>0</span><span>5000</span></div>
+        <div class="influence-row">
+          <span class="influence-label">Influence</span>
+          <div class="influence-track">
+            <div class="influence-fill" id="inf-cycles" style="width:20%"></div>
+          </div>
+          <span class="influence-pct" id="pct-cycles">20%</span>
         </div>
       </div>
 
-      <!-- Cell Temp -->
-      <div class="bg-[var(--card)] p-3.5 rounded-2xl border border-[var(--border)] shadow space-y-1">
-        <div class="text-[10px] font-medium text-[var(--muted-foreground)] flex items-center justify-between">
-          <span>Pack Temp</span>
-          <span class="text-[8px] font-mono bg-slate-900 px-1 py-0.5 rounded border border-[var(--border)]">NTC Avg</span>
-        </div>
-        <div class="flex items-baseline gap-1">
-          <span id="kpiTemp" class="text-xl font-bold font-mono tracking-tight text-[var(--foreground)]">26.0</span>
-          <span class="text-xs text-[var(--muted-foreground)]">°C</span>
-        </div>
-        <div class="text-[9px] text-[var(--muted-foreground)] flex justify-between pt-1 border-t border-[var(--border)]/50">
-          <span>Limit:</span>
-          <span class="font-mono text-[var(--muted-foreground)]">55.0 °C</span>
+      <!-- OOD Banner -->
+      <div class="ood-banner" id="ood-banner">
+        <span>⚠</span>
+        <span id="ood-banner-text">Some inputs are outside training range — physics fallback active</span>
+      </div>
+
+      <!-- Predict Button -->
+      <button class="btn-predict" id="btn-predict">
+        ⚡ Generate Virtual Battery
+      </button>
+
+      <!-- Presets -->
+      <div class="presets-label">Quick Presets</div>
+      <div class="presets-grid">
+        <button class="preset-btn" data-preset="EVB_0010">
+          <span class="preset-id">EVB_0010</span>
+          <span class="preset-name">Healthy Pack</span>
+        </button>
+        <button class="preset-btn" data-preset="EVB_0003">
+          <span class="preset-id">EVB_0003</span>
+          <span class="preset-name">Moderate Aging</span>
+        </button>
+        <button class="preset-btn" data-preset="EVB_0001">
+          <span class="preset-id">EVB_0001</span>
+          <span class="preset-name">Degraded Pack</span>
+        </button>
+        <button class="preset-btn" data-preset="EVB_0007">
+          <span class="preset-id">EVB_0007</span>
+          <span class="preset-name">Critical EOL</span>
+        </button>
+      </div>
+
+    </div><!-- /sidebar-left-inner -->
+  </aside><!-- /sidebar-left -->
+
+
+  <!-- ── CENTER: Telemetry Dashboard ───────────────────── -->
+  <section class="main-center">
+
+    <!-- SOH Gauge Panel -->
+    <div class="gauge-panel">
+      <!-- SVG Arc Gauge -->
+      <div class="soh-gauge-wrap">
+        <svg class="soh-gauge" viewBox="0 0 200 170" xmlns="http://www.w3.org/2000/svg">
+          <!-- Track arc background -->
+          <path id="gauge-track" fill="none" stroke="#e2e8f0" stroke-width="12" stroke-linecap="round"/>
+          <!-- Colored foreground arc -->
+          <path id="gauge-fg" fill="none" stroke="#059669" stroke-width="12" stroke-linecap="round"/>
+          <!-- Glow duplicate (subtle shadow) -->
+          <path id="gauge-glow" fill="none" stroke="#059669" stroke-width="16" stroke-linecap="round" opacity="0.1" style="filter:blur(3px)"/>
+        </svg>
+        <div class="gauge-center-text">
+          <div class="gauge-value" id="gauge-soh-val">--</div>
+          <div class="gauge-unit">%</div>
+          <div class="gauge-label">State of Health</div>
         </div>
       </div>
 
-      <!-- Internal Resistance (IR) -->
-      <div class="bg-[var(--card)] p-3.5 rounded-2xl border border-[var(--border)] shadow space-y-1">
-        <div class="text-[10px] font-medium text-[var(--muted-foreground)] flex items-center justify-between">
-          <span>Pack Resistance</span>
-          <span class="text-[8px] font-mono text-sky-400 font-bold">2RC + ML</span>
+      <!-- Status Chips -->
+      <div class="gauge-info">
+        <div>
+          <div style="font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;font-weight:600;">Condition</div>
+          <div class="condition-chip healthy" id="chip-condition">● Healthy</div>
         </div>
-        <div class="flex items-baseline gap-1">
-          <span id="kpiIR" class="text-xl font-bold font-mono tracking-tight text-[var(--foreground)]">460.8</span>
-          <span class="text-xs text-[var(--muted-foreground)]">mΩ</span>
+        <div>
+          <div style="font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;font-weight:600;">Second Life</div>
+          <div class="second-life-chip" id="chip-second-life">
+            <span>○</span>
+            <span id="sl-text">Not yet</span>
+          </div>
         </div>
-        <div class="text-[9px] text-[var(--muted-foreground)] flex justify-between pt-1 border-t border-[var(--border)]/50">
-          <span>Per Cell:</span>
-          <span id="kpiCellIR" class="font-mono text-[var(--muted-foreground)] font-medium">4.8 mΩ</span>
+        <div>
+          <div style="font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;font-weight:600;">Condition Score</div>
+          <div style="font-family:'Plus Jakarta Sans',sans-serif;font-size:26px;font-weight:800;color:var(--blue-accent)" id="condition-score-val">--</div>
         </div>
       </div>
-    </div>
 
+      <!-- Mini KPI grid -->
+      <div class="gauge-kpis">
+        <div class="mini-kpi">
+          <div class="mini-kpi-label">Capacity</div>
+          <div class="mini-kpi-value"><span id="kpi-capacity">--</span><span class="mini-kpi-unit">Ah</span></div>
+        </div>
+        <div class="mini-kpi">
+          <div class="mini-kpi-label">Int. Resistance</div>
+          <div class="mini-kpi-value"><span id="kpi-ir">--</span><span class="mini-kpi-unit">mΩ</span></div>
+        </div>
+        <div class="mini-kpi">
+          <div class="mini-kpi-label">Energy</div>
+          <div class="mini-kpi-value"><span id="kpi-energy">--</span><span class="mini-kpi-unit">kWh</span></div>
+        </div>
+        <div class="mini-kpi">
+          <div class="mini-kpi-label">Power</div>
+          <div class="mini-kpi-value"><span id="kpi-power">--</span><span class="mini-kpi-unit">kW</span></div>
+        </div>
+      </div>
+    </div><!-- /gauge-panel -->
 
     <!-- Charts Row -->
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-      <!-- Waveform 1: Voltage & Current -->
-      <div class="bg-[var(--card)] p-4 rounded-2xl border border-[var(--border)] shadow space-y-3">
-        <div class="flex items-center justify-between">
-          <div class="flex items-center gap-2">
-            <span class="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
-            <span class="text-xs font-semibold text-[var(--foreground)]">Pack Voltage (V) & Current (A)</span>
-          </div>
-          <div class="flex items-center gap-3 text-[11px] font-mono text-[var(--muted-foreground)]">
-            <span class="flex items-center gap-1"><span class="w-2 h-0.5 bg-emerald-500"></span> Voltage</span>
-            <span class="flex items-center gap-1"><span class="w-2 h-0.5 bg-sky-500"></span> Current</span>
-          </div>
-        </div>
-        <div class="h-44 w-full bg-slate-900 rounded-xl border border-[var(--border)] relative overflow-hidden">
-          <canvas id="chartVI" class="w-full h-full block"></canvas>
-        </div>
+    <div class="charts-row">
+      <div class="chart-panel">
+        <div class="chart-panel-title">State of Charge %</div>
+        <canvas id="chart-soc"></canvas>
       </div>
-
-      <!-- Waveform 2: SOC, SOH & Temperature -->
-      <div class="bg-[var(--card)] p-4 rounded-2xl border border-[var(--border)] shadow space-y-3">
-        <div class="flex items-center justify-between">
-          <div class="flex items-center gap-2">
-            <span class="w-2.5 h-2.5 rounded-full bg-amber-500"></span>
-            <span class="text-xs font-semibold text-[var(--foreground)]">SOC (%) & Pack Temp (°C)</span>
-          </div>
-          <div class="flex items-center gap-3 text-[11px] font-mono text-[var(--muted-foreground)]">
-            <span class="flex items-center gap-1"><span class="w-2 h-0.5 bg-amber-500"></span> SOC</span>
-            <span class="flex items-center gap-1"><span class="w-2 h-0.5 bg-rose-500"></span> Temp</span>
-          </div>
-        </div>
-        <div class="h-44 w-full bg-slate-900 rounded-xl border border-[var(--border)] relative overflow-hidden">
-          <canvas id="chartST" class="w-full h-full block"></canvas>
-        </div>
+      <div class="chart-panel">
+        <div class="chart-panel-title">Pack Voltage V</div>
+        <canvas id="chart-voltage"></canvas>
+      </div>
+      <div class="chart-panel">
+        <div class="chart-panel-title">Current A</div>
+        <canvas id="chart-current"></canvas>
       </div>
     </div>
 
-    <!-- 96-Cell Pack Imbalance Bar Matrix -->
-    <div class="bg-[var(--card)] p-4 rounded-2xl border border-[var(--border)] shadow space-y-3">
-      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-        <div>
-          <h3 class="text-xs font-semibold text-[var(--foreground)] flex items-center gap-2">
-            <span>96S Series String — Cell-Level Voltage Distribution</span>
-            <span class="text-[10px] font-normal text-[var(--muted-foreground)]">(Live data calculated per-cell by Python 2RC ECM)</span>
-          </h3>
-        </div>
-        <div class="flex items-center gap-4 text-[11px] font-mono">
-          <span class="text-emerald-400">Min: <b id="valCellMin">3.738 V</b></span>
-          <span class="text-sky-400">Max: <b id="valCellMax">3.756 V</b></span>
-          <span class="text-amber-400">Spread: <b id="valCellSpread">18 mV</b></span>
-        </div>
-      </div>
-      <!-- 96 Cell bars -->
-      <div id="cellMatrix" class="h-16 w-full bg-slate-900 rounded-xl border border-[var(--border)] p-2 flex items-end justify-between gap-0.5"></div>
-      <div class="flex justify-between text-[10px] text-[var(--muted-foreground)] font-mono px-1">
-        <span>Cell 1 (Negative Terminal)</span>
-        <span>Cell 48 (Pack Midpoint)</span>
-        <span>Cell 96 (Positive Terminal)</span>
-      </div>
+    <!-- Sim Controls -->
+    <div class="sim-controls">
+      <span class="sim-controls-label">Simulation</span>
+      <button class="ctrl-btn active" id="btn-play-pause">
+        <span id="play-icon">⏸</span>
+        <span id="play-label">Pause</span>
+      </button>
+      <button class="ctrl-btn" id="btn-step-once">▶▐ Step</button>
+      <div class="ctrl-divider"></div>
+      <span style="font-size:10px;color:var(--text-muted);font-weight:600">Drive Cycle</span>
+      <select class="ctrl-select" id="sel-drive-cycle">
+        <option value="urban">Urban</option>
+        <option value="highway">Highway</option>
+        <option value="sport">Sport</option>
+        <option value="idle">Idle</option>
+      </select>
+      <div class="ctrl-divider"></div>
+      <span style="font-size:10px;color:var(--text-muted);font-weight:600">Age</span>
+      <input type="range" class="input-slider" id="sl-age" min="0" max="10" step="0.5" value="0" style="width:80px">
+      <span id="age-display" style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--blue-accent);font-weight:600;width:30px">0 yr</span>
+      <div class="ctrl-divider"></div>
+      <span class="sim-time" id="sim-time-display">T + 0 s</span>
     </div>
 
-    <!-- Bottom Section: CAN Bus Frame Stream & BMS Alert Terminal -->
-    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-      <!-- Live CAN Frames -->
-      <div class="bg-[var(--card)] p-4 rounded-2xl border border-[var(--border)] shadow space-y-2">
-        <div class="flex items-center justify-between">
-          <span class="text-xs font-semibold text-[var(--foreground)] flex items-center gap-1.5">
-            <span class="w-2 h-2 rounded-full bg-emerald-400 animate-ping"></span> Live CAN Telemetry Stream (500 kbps)
-          </span>
-          <span id="canFrameCount" class="text-[10px] font-mono text-[var(--muted-foreground)]">0 frames</span>
+  </section><!-- /main-center -->
+
+
+  <!-- ── RIGHT SIDEBAR: Analysis Panel ─────────────────── -->
+  <aside class="sidebar-right">
+    <div class="sidebar-right-inner">
+
+      <!-- Feature Influence Radar -->
+      <div class="radar-panel">
+        <div class="panel-header" style="border:none;padding:0 0 10px">
+          <span class="panel-title" style="padding:0">Feature Influence Radar</span>
+          <span style="font-size:9px;color:var(--text-muted);margin-left:auto;font-weight:500">% contribution to prediction</span>
         </div>
-        <div id="canLog" class="h-36 overflow-y-auto font-mono text-[11px] p-2.5 rounded-xl bg-slate-900 border border-[var(--border)] space-y-1">
-          <!-- CAN frames appear here -->
+        <canvas id="chart-radar" height="220"></canvas>
+      </div>
+
+      <!-- KPI Cards -->
+      <div class="kpi-grid">
+        <div class="kpi-card">
+          <div class="kpi-card-label">🔋 Capacity</div>
+          <div class="kpi-card-value"><span id="r-capacity">--</span><span class="kpi-card-unit">Ah</span></div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-card-label">⚡ Int. Resistance</div>
+          <div class="kpi-card-value"><span id="r-ir">--</span><span class="kpi-card-unit">mΩ</span></div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-card-label">🔌 Energy Stored</div>
+          <div class="kpi-card-value"><span id="r-energy">--</span><span class="kpi-card-unit">kWh</span></div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-card-label">💡 Inst. Power</div>
+          <div class="kpi-card-value"><span id="r-power">--</span><span class="kpi-card-unit">kW</span></div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-card-label">📉 Cell Vmin</div>
+          <div class="kpi-card-value"><span id="r-vmin">--</span><span class="kpi-card-unit">V</span></div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-card-label">📈 Cell Spread</div>
+          <div class="kpi-card-value"><span id="r-vspread">--</span><span class="kpi-card-unit">mV</span></div>
         </div>
       </div>
 
-      <!-- BMS Alert & Diagnostics Console -->
-      <div class="bg-[var(--card)] p-4 rounded-2xl border border-[var(--border)] shadow space-y-2">
-        <div class="flex items-center justify-between">
-          <span class="text-xs font-semibold text-[var(--foreground)]">BMS Alert & Diagnostic Console</span>
-          <span id="alertCountBadge" class="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">All Systems Nominal</span>
+      <!-- 96-Cell Heatmap -->
+      <div class="cell-matrix-panel">
+        <div class="cell-matrix-title">
+          <span>96-Cell Pack Matrix</span>
+          <div class="cell-matrix-legend">
+            <div class="legend-item"><div class="legend-dot" style="background:#059669"></div> &gt;3.8V</div>
+            <div class="legend-item"><div class="legend-dot" style="background:#2563eb"></div> 3.5–3.8</div>
+            <div class="legend-item"><div class="legend-dot" style="background:#d97706"></div> 3.2–3.5</div>
+            <div class="legend-item"><div class="legend-dot" style="background:#dc2626"></div> &lt;3.2</div>
+          </div>
         </div>
-        <div id="alertLog" class="h-36 overflow-y-auto font-mono text-[11px] p-2.5 rounded-xl bg-slate-900 border border-[var(--border)] space-y-1.5">
-          <div class="text-[var(--muted-foreground)] italic">No active faults. Battery pack operating within nominal SOA window.</div>
+        <div class="cell-grid" id="cell-grid"></div>
+      </div>
+
+      <!-- Alerts Feed -->
+      <div class="alerts-panel">
+        <div class="alerts-title">⚠ Alert Feed</div>
+        <div class="alerts-list" id="alerts-list">
+          <div class="no-alerts">No active alerts — system nominal</div>
         </div>
       </div>
-    </div>
 
-  </div>
+    </div><!-- /sidebar-right-inner -->
+  </aside><!-- /sidebar-right -->
 
-  <script src="/static/js/app.js"></script>
+</main><!-- /app-main -->
+
+<script src="/static/js/app.js"></script>
 </body>
 </html>
+
