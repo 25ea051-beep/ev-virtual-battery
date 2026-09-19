@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+.venv/
+ENV/
+env/
+
+# Large Simulation Datasets
+*.parquet
+*.csv
+!sample_*.csv
+!battery_can_dataset.csv
+
+# IDE & Editor files
+.idea/
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+Thumbs.db

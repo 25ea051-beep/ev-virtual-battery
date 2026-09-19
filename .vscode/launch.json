@@ -1,0 +1,43 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "🚀 Launch Web Dashboard (Flask + HTML)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/app.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "FLASK_ENV": "development",
+                "PYTHONUNBUFFERED": "1"
+            }
+        },
+        {
+            "name": "🔋 Run CLI Battery Twin Demo",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/virtual_battery.py",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "📊 Generate Full CAN Dataset",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/virtual_battery.py",
+            "args": ["--generate"],
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "🧠 Train SOH Predictor Model",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/virtual_battery.py",
+            "args": ["--train"],
+            "console": "integratedTerminal",
+            "justMyCode": true
+        }
+    ]
+}
